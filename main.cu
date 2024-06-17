@@ -3,6 +3,13 @@
 #include <random>
 #include <vector>
 
+__global__
+void print_point(float *x, float *y)
+{
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  printf("%9.3f, %9.3f\n", x[i], y[i]);
+}
+
 int main() {
     // Around 2 million particles.
     const auto N = 1 << 21;
@@ -42,6 +49,13 @@ int main() {
                   << std::setw(10) << h_pos_y[i]
                   << '\n';
     }
+    std::cout << '\n';
+
+    // Copy positions from the host to the device.
+    cudaMemcpy(d_pos_x, h_pos_x.data(), size_1d, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pos_y, h_pos_y.data(), size_1d, cudaMemcpyHostToDevice);
+
+    print_point<<<1, 10>>>(d_pos_x, d_pos_y);
 
     // Free device memory.
     cudaFree(d_pos_x);
