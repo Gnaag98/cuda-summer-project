@@ -20,30 +20,39 @@ int main() {
     const auto half_width = width / 2;
     const auto half_height = height / 2;
 
+    // Size of 2D density grid.
+    const auto U = static_cast<int>(width / 20);
+    const auto V = static_cast<int>(height / 20);
+
     const auto random_seed = 1u;
 
     // Allocation size for 1D arrays.
-    const auto size_1d = N * sizeof(float);
+    const auto position_size = N * sizeof(float);
+    const auto density_size = U * V * sizeof(float);
 
-    // Allocate particle positions on the host.
-    auto h_pos_x = std::vector<float>(size_1d);
-    auto h_pos_y = std::vector<float>(size_1d);
+    // Allocate particle positions and densities on the host.
+    auto h_pos_x = std::vector<float>(position_size);
+    auto h_pos_y = std::vector<float>(position_size);
+    auto h_density = std::vector<float>(density_size);
 
-    // Allocate particle positions on the device.
+    // Allocate particle positions and densities on the device.
     float *d_pos_x;
     float *d_pos_y;
-    cudaMalloc(&d_pos_x, size_1d);
-    cudaMalloc(&d_pos_y, size_1d);
+    float *d_density;
+    cudaMalloc(&d_pos_x, position_size);
+    cudaMalloc(&d_pos_y, position_size);
+    cudaMalloc(&d_density, density_size);
 
     // Randomly distribute particles in 2D space.
     auto random_engine = std::default_random_engine(random_seed);
     auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
     auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
-    for (size_t i = 0; i < size_1d; ++i) {
+    for (size_t i = 0; i < position_size; ++i) {
         h_pos_x[i] = uniform_distribution_x(random_engine);
         h_pos_y[i] = uniform_distribution_y(random_engine);
     }
 
+    // DEBUG: Print 10 host points.
     for (int i = 0; i < 10; ++i) {
         std::cout << std::setw(10) << h_pos_x[i]
                   << std::setw(10) << h_pos_y[i]
@@ -52,9 +61,10 @@ int main() {
     std::cout << '\n';
 
     // Copy positions from the host to the device.
-    cudaMemcpy(d_pos_x, h_pos_x.data(), size_1d, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pos_y, h_pos_y.data(), size_1d, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pos_x, h_pos_x.data(), position_size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_pos_y, h_pos_y.data(), position_size, cudaMemcpyHostToDevice);
 
+    // DEBUG: Print 10 device points.
     print_point<<<1, 10>>>(d_pos_x, d_pos_y);
 
     // Free device memory.
