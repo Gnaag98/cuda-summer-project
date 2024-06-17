@@ -1,3 +1,4 @@
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -5,16 +6,22 @@
 
 // Around 2 million particles.
 const auto N = 1 << 21;
+/* const auto N = 5*7; */
+
 
 // Size of 2D space.
 const auto width = 2000.0f;
 const auto height = 4000.0f;
+/* const auto width = 5.0f;
+const auto height = 7.0f; */
 const auto half_width = width / 2;
 const auto half_height = height / 2;
 
 // Size of 2D density grid.
 const auto U = static_cast<int>(width / 20);
 const auto V = static_cast<int>(height / 20);
+/* const auto U = 6;
+const auto V = 8; */
 
 const auto random_seed = 1u;
 
@@ -22,11 +29,74 @@ const auto random_seed = 1u;
 const auto position_size = N * sizeof(float);
 const auto density_size = U * V * sizeof(float);
 
+
+__host__ __device__
+auto x_to_u(float x) {
+    return (x / width + 0.5f) * (U - 1);
+}
+
+__host__ __device__
+auto y_to_v(float y) {
+    return (y / height + 0.5f) * (V - 1);
+}
+
+__host__ __device__
+auto get_density_index(const int2 uv) {
+    return uv.y * U + uv.x;
+}
+
 __global__
-void print_point(float *x, float *y)
-{
+void print_point(float *x, float *y) {
   int i = blockIdx.x * blockDim.x + threadIdx.x;
   printf("(%9.3f, %9.3f)\n", x[i], y[i]);
+}
+
+__global__
+void add_density_atomic(float *pos_x, float *pos_y, float *density) {
+    const auto index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= N) {
+        return;
+    }
+
+    const auto x = pos_x[index];
+    const auto y = pos_y[index];
+    // Add 0.5 to move from [-0.5, 0.5) to [0, 1).
+    const auto u = x_to_u(x);
+    const auto v = y_to_v(y);
+    //printf("(%9.3f, %9.3f) -> (%7.3f, %7.3f)\n", x, y, u, v);
+
+    // Node coordinates.
+    const auto pos_bottom_left = int2{ static_cast<int>(floor(u)), static_cast<int>(floor(v)) };
+    const auto pos_bottom_right = int2{ static_cast<int>(ceil(u)), static_cast<int>(floor(v)) };
+    const auto pos_top_left = int2{ static_cast<int>(floor(u)), static_cast<int>(ceil(v)) };
+    const auto pos_top_right = int2{ static_cast<int>(ceil(u)), static_cast<int>(ceil(v)) };
+
+    // Node weights. https://www.particleincell.com/2010/es-pic-method/
+    const auto pos_cell = float2{ u - pos_bottom_left.x, v - pos_bottom_left.y };
+    const auto weight_bottom_left  = (1 - pos_cell.x) * (1 - pos_cell.y);
+    const auto weight_bottom_right =      pos_cell.x  * (1 - pos_cell.y);
+    const auto weight_top_left     = (1 - pos_cell.x) *      pos_cell.y;
+    const auto weight_top_right    =      pos_cell.x  *      pos_cell.y;
+
+    // Node indices
+    const auto index_bottom_left = get_density_index(pos_bottom_left);
+    const auto index_bottom_right = get_density_index(pos_bottom_right);
+    const auto index_top_left = get_density_index(pos_top_left);
+    const auto index_top_right = get_density_index(pos_top_right);
+
+    atomicAdd(&density[index_bottom_left], weight_bottom_left);
+    atomicAdd(&density[index_bottom_right], weight_bottom_right);
+    atomicAdd(&density[index_top_left], weight_top_left);
+    atomicAdd(&density[index_top_right], weight_top_right);
+
+    /* printf("\n(%d, %d), (%d, %d)\n", pos_top_left.x, pos_top_left.y, pos_top_right.x, pos_top_right.y);
+    printf("(%d, %d), (%d, %d)\n", pos_bottom_left.x, pos_bottom_left.y, pos_bottom_right.x, pos_bottom_right.y);
+
+    printf("%d, %d\n", index_top_left, index_top_right);
+    printf("%d, %d\n", index_bottom_left, index_bottom_right);
+
+    printf("%7.3f, %7.3f\n", weight_top_left, weight_top_right);
+    printf("%7.3f, %7.3f\n\n", weight_bottom_left, weight_bottom_right); */
 }
 
 int main() {
@@ -47,29 +117,55 @@ int main() {
     auto random_engine = std::default_random_engine(random_seed);
     auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
     auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
-    for (size_t i = 0; i < position_size; ++i) {
+    for (size_t i = 0; i < N; ++i) {
         h_pos_x[i] = uniform_distribution_x(random_engine);
         h_pos_y[i] = uniform_distribution_y(random_engine);
     }
 
+    /* for (size_t j = 0; j < 7; ++j) {
+        for (size_t i = 0; i < 5; ++i) {
+            h_pos_x[j * 5 + i] = i - half_width + 0.5f;
+            h_pos_y[j * 5 + i] = j - half_height + 0.5f;
+            std::cout << h_pos_x[j * 5 + i] << ", " << h_pos_y[j * 5 + i] << "\n";
+        }
+    } */
+
     // DEBUG: Print 10 host points.
-    for (int i = 0; i < 10; ++i) {
+    /* for (int i = 0; i < 10; ++i) {
         std::cout << std::setw(10) << h_pos_x[i]
                   << std::setw(10) << h_pos_y[i]
                   << '\n';
     }
-    std::cout << '\n';
+    std::cout << '\n'; */
 
     // Copy positions from the host to the device.
     cudaMemcpy(d_pos_x, h_pos_x.data(), position_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_y, h_pos_y.data(), position_size, cudaMemcpyHostToDevice);
 
     // DEBUG: Print 10 device points.
-    print_point<<<1, 10>>>(d_pos_x, d_pos_y);
+    /* print_point<<<1, 10>>>(d_pos_x, d_pos_y);
     cudaDeviceSynchronize();
-    std::cout << '\n';
+    std::cout << '\n'; */
 
-    print_cell_origin<<<1, 1>>>(d_pos_x, d_pos_y, d_density);
+    const int block_size = 256;
+    const int block_count = (N + block_size - 1) / block_size;
+    add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
+    cudaDeviceSynchronize();
+
+    cudaMemcpy(h_density.data(), d_density, density_size, cudaMemcpyDeviceToHost);
+
+    auto file = std::ofstream("data.csv");
+    for (int row = 0; row < V; ++row) {
+        for (int col = 0; col < U; ++col) {
+            file << h_density[row * U + col] << ',';
+        }
+        file << '\n';
+    }
+
+    auto file_temp = std::ofstream("positions.csv");
+    for (int i = 0; i < N; ++i) {
+        file_temp << h_pos_x[i] << ',' << h_pos_y[i] << '\n';
+    }
 
     // Free device memory.
     cudaFree(d_pos_x);

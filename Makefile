@@ -2,6 +2,9 @@
 
 all: build
 
+build_and_run:
+	make && ./bin/main
+
 build: main
 
 main.o: main.cu

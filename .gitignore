@@ -2,6 +2,10 @@
 
 bin/
 temp/
+scripts/
 
 # Ignore intermediary files
 *.o
+
+#Ignore output files
+*.csv
