@@ -6,29 +6,25 @@
 
 // Around 2 million particles.
 const auto N = 1 << 21;
-/* const auto N = 5*7; */
 
+// Switch between random and grid distribution.
+const auto is_randomly_distributed = true;
 
 // Size of 2D space.
 const auto width = 2000.0f;
 const auto height = 4000.0f;
-/* const auto width = 5.0f;
-const auto height = 7.0f; */
 const auto half_width = width / 2;
 const auto half_height = height / 2;
 
 // Size of 2D density grid.
 const auto U = static_cast<int>(width / 20);
 const auto V = static_cast<int>(height / 20);
-/* const auto U = 6;
-const auto V = 8; */
 
 const auto random_seed = 1u;
 
 // Allocation size for 1D arrays.
 const auto position_size = N * sizeof(float);
 const auto density_size = U * V * sizeof(float);
-
 
 __host__ __device__
 auto x_to_u(float x) {
@@ -113,58 +109,65 @@ int main() {
     cudaMalloc(&d_pos_y, position_size);
     cudaMalloc(&d_density, density_size);
 
-    // Randomly distribute particles in 2D space.
-    auto random_engine = std::default_random_engine(random_seed);
-    auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
-    auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
-    for (size_t i = 0; i < N; ++i) {
-        h_pos_x[i] = uniform_distribution_x(random_engine);
-        h_pos_y[i] = uniform_distribution_y(random_engine);
-    }
+    
 
-    /* for (size_t j = 0; j < 7; ++j) {
-        for (size_t i = 0; i < 5; ++i) {
-            h_pos_x[j * 5 + i] = i - half_width + 0.5f;
-            h_pos_y[j * 5 + i] = j - half_height + 0.5f;
-            std::cout << h_pos_x[j * 5 + i] << ", " << h_pos_y[j * 5 + i] << "\n";
+    if (is_randomly_distributed) {
+        // Randomly distribute particles in 2D space.
+        auto random_engine = std::default_random_engine(random_seed);
+        auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
+        auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
+        for (size_t i = 0; i < N; ++i) {
+            h_pos_x[i] = uniform_distribution_x(random_engine);
+            h_pos_y[i] = uniform_distribution_y(random_engine);
         }
-    } */
+    } else {
+        // Has to be a power of two to easily factor N into rows and columns.
+        auto is_power_of_two = [](const unsigned long x) {
+            // https://stackoverflow.com/a/600306
+            return (x != 0) && ((x & (x - 1)) == 0);
+        };
+        if (!is_power_of_two(N)) {
+            return EXIT_FAILURE;
+        }
 
-    // DEBUG: Print 10 host points.
-    /* for (int i = 0; i < 10; ++i) {
-        std::cout << std::setw(10) << h_pos_x[i]
-                  << std::setw(10) << h_pos_y[i]
-                  << '\n';
+        // Factor N so that rows * columns = N.
+        const auto power = static_cast<int>(log2(N));
+        const auto row_power = power / 2;
+        const auto column_power = power - row_power;
+        const auto rows = 1 << row_power;
+        const auto columns = 1 << column_power;
+        
+        // Iterate over all N = rows * columns particles.
+        for (size_t j = 0; j < rows; ++j) {
+            for (size_t i = 0; i < columns; ++i) {
+                h_pos_x[j * columns + i] = i * width / columns - half_width;
+                h_pos_y[j * columns + i] = j * height / rows - half_height;
+            }
+        }
     }
-    std::cout << '\n'; */
 
     // Copy positions from the host to the device.
     cudaMemcpy(d_pos_x, h_pos_x.data(), position_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_y, h_pos_y.data(), position_size, cudaMemcpyHostToDevice);
 
-    // DEBUG: Print 10 device points.
-    /* print_point<<<1, 10>>>(d_pos_x, d_pos_y);
-    cudaDeviceSynchronize();
-    std::cout << '\n'; */
-
+    // Compute the particle density.
     const int block_size = 256;
     const int block_count = (N + block_size - 1) / block_size;
     add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
     cudaDeviceSynchronize();
-
     cudaMemcpy(h_density.data(), d_density, density_size, cudaMemcpyDeviceToHost);
 
-    auto file = std::ofstream("data.csv");
+    // Store data to files.
+    auto density_file = std::ofstream("density.csv");
     for (int row = 0; row < V; ++row) {
         for (int col = 0; col < U; ++col) {
-            file << h_density[row * U + col] << ',';
+            density_file << h_density[row * U + col] << ',';
         }
-        file << '\n';
+        density_file << '\n';
     }
-
-    auto file_temp = std::ofstream("positions.csv");
+    auto positions_file = std::ofstream("positions.csv");
     for (int i = 0; i < N; ++i) {
-        file_temp << h_pos_x[i] << ',' << h_pos_y[i] << '\n';
+        positions_file << h_pos_x[i] << ',' << h_pos_y[i] << '\n';
     }
 
     // Free device memory.
