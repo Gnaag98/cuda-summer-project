@@ -1,4 +1,4 @@
-#include <memory>
+#include <vector>
 
 int main() {
     // Around 2 million particles.
@@ -8,8 +8,8 @@ int main() {
     auto size_1d = N * sizeof(float);
 
     // Allocate particle positions on the host.
-    auto h_pos_x = std::make_unique<float>(size_1d);
-    auto h_pos_y = std::make_unique<float>(size_1d);
+    auto h_pos_x = std::vector<float>(size_1d);
+    auto h_pos_y = std::vector<float>(size_1d);
 
     // Allocate particle positions on the device.
     float *d_pos_x;
