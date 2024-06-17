@@ -1,1 +1,7 @@
 .vscode/
+
+bin/
+temp/
+
+# Ignore intermediary files
+*.o
