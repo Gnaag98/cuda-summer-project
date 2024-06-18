@@ -1,8 +1,9 @@
 .vscode/
 
 bin/
-temp/
 scripts/
+obj/
+temp/
 
 # Ignore intermediary files
 *.o

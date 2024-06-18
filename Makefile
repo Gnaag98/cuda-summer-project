@@ -5,10 +5,16 @@ all: build
 build_and_run:
 	make && ./bin/main
 
-build: main
+build: bin/main
 
-main.o: main.cu
-	nvcc -g -G -o $@ -c $<
+bin/main: obj/main.o | bin
+	nvcc -g -G -std=c++20 -o $@ $+
 
-main: main.o
-	nvcc -g -G -o bin/$@ $+
+obj/main.o: main.cu | obj
+	nvcc -g -G -std=c++20 -o $@ -c $<
+
+bin:
+	mkdir -p $@
+
+obj:
+	mkdir -p $@
