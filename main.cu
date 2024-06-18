@@ -1,3 +1,4 @@
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -134,6 +135,26 @@ void distribute_grid(std::span<float> pos_x, std::span<float> pos_y) {
     }
 }
 
+void store_density(std::filesystem::path filepath,
+                   std::span<const float> density) {
+    auto density_file = std::ofstream(filepath);
+    for (int row = 0; row < V; ++row) {
+        for (int col = 0; col < U; ++col) {
+            density_file << density[row * U + col] << ',';
+        }
+        density_file << '\n';
+    }
+}
+
+void store_positions(std::filesystem::path filepath,
+                     std::span<const float> pos_x,
+                     std::span<const float> pos_y) {
+    auto positions_file = std::ofstream(filepath);
+    for (int i = 0; i < N; ++i) {
+        positions_file << pos_x[i] << ',' << pos_y[i] << '\n';
+    }
+}
+
 int main() {
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<float>(position_size);
@@ -166,17 +187,10 @@ int main() {
     cudaMemcpy(h_density.data(), d_density, density_size, cudaMemcpyDeviceToHost);
 
     // Store data to files.
-    auto density_file = std::ofstream("density.csv");
-    for (int row = 0; row < V; ++row) {
-        for (int col = 0; col < U; ++col) {
-            density_file << h_density[row * U + col] << ',';
-        }
-        density_file << '\n';
-    }
-    auto positions_file = std::ofstream("positions.csv");
-    for (int i = 0; i < N; ++i) {
-        positions_file << h_pos_x[i] << ',' << h_pos_y[i] << '\n';
-    }
+    const auto output_directory = std::filesystem::path("output");
+    std::filesystem::create_directory(output_directory);
+    store_density(output_directory / "density.csv", h_density);
+    store_positions(output_directory / "positions.csv", h_pos_x, h_pos_y);
 
     // Free device memory.
     cudaFree(d_pos_x);

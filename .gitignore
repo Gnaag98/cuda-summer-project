@@ -3,6 +3,7 @@
 bin/
 scripts/
 obj/
+output/
 temp/
 
 # Ignore intermediary files
