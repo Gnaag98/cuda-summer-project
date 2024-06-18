@@ -2,6 +2,8 @@
 #include <iomanip>
 #include <iostream>
 #include <random>
+#include <span>
+#include <stdexcept>
 #include <vector>
 
 // Around 2 million particles.
@@ -95,6 +97,43 @@ void add_density_atomic(float *pos_x, float *pos_y, float *density) {
     printf("%7.3f, %7.3f\n\n", weight_bottom_left, weight_bottom_right); */
 }
 
+void distribute_random(std::span<float> pos_x, std::span<float> pos_y) {
+    // Randomly distribute particles in 2D space.
+    auto random_engine = std::default_random_engine(random_seed);
+    auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
+    auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
+    for (size_t i = 0; i < N; ++i) {
+        pos_x[i] = uniform_distribution_x(random_engine);
+        pos_y[i] = uniform_distribution_y(random_engine);
+    }
+}
+
+void distribute_grid(std::span<float> pos_x, std::span<float> pos_y) {
+    // Has to be a power of two to easily factor N into rows and columns.
+    auto is_power_of_two = [](const unsigned long x) {
+        // https://stackoverflow.com/a/600306
+        return (x != 0) && ((x & (x - 1)) == 0);
+    };
+    if (!is_power_of_two(N)) {
+        throw std::runtime_error("N has to be a power of 2 for grid distribution.");
+    }
+
+    // Factor N so that rows * columns = N.
+    const auto power = static_cast<int>(log2(N));
+    const auto row_power = power / 2;
+    const auto column_power = power - row_power;
+    const auto rows = 1 << row_power;
+    const auto columns = 1 << column_power;
+    
+    // Iterate over all N = rows * columns particles.
+    for (size_t j = 0; j < rows; ++j) {
+        for (size_t i = 0; i < columns; ++i) {
+            pos_x[j * columns + i] = i * width / columns - half_width;
+            pos_y[j * columns + i] = j * height / rows - half_height;
+        }
+    }
+}
+
 int main() {
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<float>(position_size);
@@ -109,41 +148,10 @@ int main() {
     cudaMalloc(&d_pos_y, position_size);
     cudaMalloc(&d_density, density_size);
 
-    
-
     if (is_randomly_distributed) {
-        // Randomly distribute particles in 2D space.
-        auto random_engine = std::default_random_engine(random_seed);
-        auto uniform_distribution_x = std::uniform_real_distribution<float>(-half_width, half_width);
-        auto uniform_distribution_y = std::uniform_real_distribution<float>(-half_height, half_height);
-        for (size_t i = 0; i < N; ++i) {
-            h_pos_x[i] = uniform_distribution_x(random_engine);
-            h_pos_y[i] = uniform_distribution_y(random_engine);
-        }
+        distribute_random(h_pos_x, h_pos_y);
     } else {
-        // Has to be a power of two to easily factor N into rows and columns.
-        auto is_power_of_two = [](const unsigned long x) {
-            // https://stackoverflow.com/a/600306
-            return (x != 0) && ((x & (x - 1)) == 0);
-        };
-        if (!is_power_of_two(N)) {
-            return EXIT_FAILURE;
-        }
-
-        // Factor N so that rows * columns = N.
-        const auto power = static_cast<int>(log2(N));
-        const auto row_power = power / 2;
-        const auto column_power = power - row_power;
-        const auto rows = 1 << row_power;
-        const auto columns = 1 << column_power;
-        
-        // Iterate over all N = rows * columns particles.
-        for (size_t j = 0; j < rows; ++j) {
-            for (size_t i = 0; i < columns; ++i) {
-                h_pos_x[j * columns + i] = i * width / columns - half_width;
-                h_pos_y[j * columns + i] = j * height / rows - half_height;
-            }
-        }
+        distribute_grid(h_pos_x, h_pos_y);
     }
 
     // Copy positions from the host to the device.
