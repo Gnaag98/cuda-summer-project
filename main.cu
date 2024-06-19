@@ -7,22 +7,53 @@
 #include <stdexcept>
 #include <vector>
 
+template<typename T>
 struct Dimension {
-    float width;
-    float height;
+    T width;
+    T height;
+};
+
+template<typename T>
+struct Rectangle {
+    // (x, y) is the bottom left corner.
+    T x;
+    T y;
+    T width;
+    T height;
+
+    constexpr static auto centered(const T width, const T height) {
+        return Rectangle{
+            .x = -width / 2,
+            .y = -height / 2,
+            .width = width,
+            .height = height
+        };
+    }
+
+    __host__ __device__
+    constexpr T left() const { return x; }
+    __host__ __device__
+    constexpr T right() const { return x + width; }
+    __host__ __device__
+    constexpr T bottom() const { return y; }
+    __host__ __device__
+    constexpr T top() const { return y + height; }
 };
 
 // Switch between random and grid distribution.
 const auto is_randomly_distributed = true;
 
 // Size of 2D space.
-const auto space = Dimension{ width:2000.0f, height:4000.0f };
+const auto space = Rectangle<float>::centered(2000.0f, 4000.0f);
 
-// Size of cell grid.
+// Number of cells in the grid.
 const auto U = static_cast<int>(10);
 const auto V = static_cast<int>(20);
 
-const auto cell = Dimension{ space.width / U, space.height / V };
+const auto cell = Dimension{
+    .width = space.width / U,
+    .height = space.height / V
+};
 
 // Lattice node count, where each node is a cell corner.
 const auto node_count = int2{ (U + 1), (V + 1) };
@@ -38,16 +69,28 @@ const auto random_seed = 1u;
 const auto positions_bytes = N * sizeof(float);
 const auto lattice_bytes = node_count.x * node_count.y * sizeof(float);
 
+template<typename T>
 __host__ __device__
-auto x_to_u(float x) {
-    // + 0.5 to shift from [-0.5, 0.5) to [0, 1).
-    return (x / space.width + 0.5f) * U;
+auto linear_map(const T x, const T x1, const T x2, const T y1, const T y2) {
+    const auto slope = (y2 - y1) / (x2 - x1);
+    const auto y = (x - x1) * slope + y1;
+    return y;
 }
 
+/**
+ * Convert world x coordinate to horizontal cell index.
+ */
+__host__ __device__
+auto x_to_u(float x) {
+    return linear_map<float>(x, space.left(), space.right(), 0, U);
+}
+
+/**
+ * Convert world y coordinate to vertical cell index.
+ */
 __host__ __device__
 auto y_to_v(float y) {
-    // + 0.5 to shift from [-0.5, 0.5) to [0, 1).
-    return (y / space.height + 0.5f) * V;
+    return linear_map<float>(y, space.bottom(), space.top(), 0, V);
 }
 
 __host__ __device__
@@ -86,7 +129,7 @@ void add_density_atomic(float *pos_x, float *pos_y, float *density) {
     const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
     const auto weight_top_right    =      pos_relative_cell.x  *      pos_relative_cell.y;
 
-    // Node indices
+    // Node indices.
     const auto index_bottom_left = get_node_index(node_bottom_left);
     const auto index_bottom_right = get_node_index(node_bottom_right);
     const auto index_top_left = get_node_index(node_top_left);

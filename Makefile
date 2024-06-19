@@ -5,6 +5,9 @@ all: build
 run:
 	./bin/main
 
+profile:
+	nvprof ./bin/main
+
 build_and_run:
 	make && ./bin/main
 
