@@ -27,6 +27,8 @@ draw_grid(density);
 scatter(positions(:,1), positions(:,2), 150, '.b')
 hold off
 axis padded
+xlabel('x')
+ylabel('y')
 
 figure(2)
 clf
@@ -36,6 +38,9 @@ hold on
 draw_density(density);
 draw_grid(density);
 hold off
+axis padded
+xlabel('x')
+ylabel('y')
 
 function draw_density(density)
 global left
