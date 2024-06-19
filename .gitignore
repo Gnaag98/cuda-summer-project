@@ -1,13 +1,13 @@
 .vscode/
 
 bin/
-scripts/
-obj/
-output/
+
+# Ignore temporary files
 temp/
+*.asv
 
 # Ignore intermediary files
-*.o
+obj/
 
 #Ignore output files
-*.csv
+output/
