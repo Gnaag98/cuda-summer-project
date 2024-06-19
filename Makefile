@@ -2,6 +2,9 @@
 
 all: build
 
+run:
+	./bin/main
+
 build_and_run:
 	make && ./bin/main
 
