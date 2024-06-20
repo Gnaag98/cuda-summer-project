@@ -59,6 +59,9 @@ struct Rectangle {
 // Switch between random and grid distribution.
 const auto is_randomly_distributed = true;
 
+// Number of kernel iterations. Higher = better for profiling.
+const auto kernel_iteration_count = 100;
+
 // Size of 2D space.
 const auto space = Rectangle<float>::centered(2048.0f, 4096.0f);
 
@@ -335,11 +338,11 @@ int main() {
     cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
 
     // Compute the particle density.
-    const int block_size = 256;
-    const int block_count = (N + block_size - 1) / block_size;
+    const auto block_size = 256;
+    const auto block_count = (N + block_size - 1) / block_size;
 
     // Loop for better statistics.
-    for (int i = 0; i < 100; ++i) {
+    for (int i = 0; i < kernel_iteration_count; ++i) {
         add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
         cudaDeviceSynchronize();
         cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
