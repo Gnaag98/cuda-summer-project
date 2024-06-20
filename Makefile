@@ -1,4 +1,4 @@
-
+profiling_filename = profiling.csv
 
 all: build
 
@@ -6,9 +6,9 @@ run:
 	./bin/main
 
 profile:
-	nvprof ./bin/main
+	nvprof --csv --log-file output/$(profiling_filename) ./bin/main
 
-build_and_run:
+build-and-run:
 	make && ./bin/main
 
 build: bin/main
