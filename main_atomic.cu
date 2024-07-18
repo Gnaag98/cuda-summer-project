@@ -1,9 +1,13 @@
+#include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <vector>
 
 #include "common.hpp"
 
 __global__
-void add_density_atomic(float *const pos_x, float *const pos_y, float *density) {
+void add_density_atomic(const float *pos_x, const float *pos_y,
+        float *density) {
     const auto index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= N) {
         return;
@@ -39,11 +43,22 @@ void add_density_atomic(float *const pos_x, float *const pos_y, float *density) 
     atomicAdd(&density[index_top_right], weight_top_right);
 }
 
+void store_density(std::filesystem::path filepath,
+                   std::span<const float> density) {
+    auto density_file = std::ofstream(filepath);
+    for (int row = 0; row < (V + 1); ++row) {
+        for (int col = 0; col < (U + 1); ++col) {
+            density_file << density[row * (U + 1) + col] << ',';
+        }
+        density_file << '\n';
+    }
+}
+
 int main() {
     // Allocate particle positions and densities on the host.
-    auto h_pos_x = std::vector<float>(positions_bytes);
-    auto h_pos_y = std::vector<float>(positions_bytes);
-    auto h_density = std::vector<float>(lattice_bytes);
+    auto h_pos_x = std::vector<float>(positions_count);
+    auto h_pos_y = std::vector<float>(positions_count);
+    auto h_density = std::vector<float>(lattice_count);
 
     // Allocate particle positions and densities on the device.
     float *d_pos_x;
@@ -59,10 +74,6 @@ int main() {
     cudaMemcpy(d_pos_x, h_pos_x.data(), positions_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
 
-    // Compute the particle density.
-    const auto block_size = 256;
-    const auto block_count = (N + block_size - 1) / block_size;
-
     add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
     cudaDeviceSynchronize();
     cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
@@ -70,4 +81,9 @@ int main() {
     // Free device memory.
     cudaFree(d_pos_x);
     cudaFree(d_pos_y);
+
+    // Store data to files.
+    const auto output_directory = std::filesystem::path("output");
+    std::filesystem::create_directory(output_directory);
+    store_density(output_directory / "density_atomic.csv", h_density);
 }

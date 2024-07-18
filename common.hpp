@@ -48,7 +48,7 @@ const auto cell = Dimension{
 // Lattice node count, where each node is a cell corner.
 const auto node_count = Dimension{ (U + 1), (V + 1) };
 
-const int cell_particle_count = 1024;
+const int cell_particle_count = 256;
 
 // Total number of particles.
 const auto N = cell_particle_count * U * V;
@@ -56,8 +56,13 @@ const auto N = cell_particle_count * U * V;
 const auto random_seed = 1u;
 
 // Allocation size for 1D arrays.
-const auto positions_bytes = N * sizeof(float);
-const auto lattice_bytes = (U + 1) * (V + 1) * sizeof(float);
+const auto positions_count = N;
+const auto lattice_count = (U + 1) * (V + 1);
+const auto positions_bytes = positions_count * sizeof(float);
+const auto lattice_bytes = lattice_count * sizeof(float);
+
+const auto block_size = 256;
+const auto block_count = (N + block_size - 1) / block_size;
 
 template<typename T>
 constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T y2) {
@@ -104,6 +109,21 @@ void distribute_random(std::span<float> pos_x, std::span<float> pos_y) {
                 const auto particle_index = get_particle_index(i, u, v);
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
+                pos_x[particle_index] = x;
+                pos_y[particle_index] = y;
+            }
+        }
+    }
+}
+
+void distribute_cell_center(std::span<float> pos_x, std::span<float> pos_y) {
+    // Place all particles in the center of each cell.
+    for (int v = 0; v < V; ++v) {
+        for (int u = 0; u < U; ++u) {
+            for (int i = 0; i <  cell_particle_count; ++i) {
+                const auto particle_index = get_particle_index(i, u, v);
+                const auto x = (u + 0.5) * cell.width - space.width / 2;
+                const auto y = (v + 0.5) * cell.height - space.height / 2;
                 pos_x[particle_index] = x;
                 pos_y[particle_index] = y;
             }

@@ -1,14 +1,8 @@
-profiling_filename = profiling.csv
-flags = -std=c++20
+flags = -std=c++20 --expt-relaxed-constexpr
 
 all: build
 
-clean:
-	rm -rf ./bin
-	rm -rf ./obj
-
-run:
-	./bin/main
+build: bin/main_atomic bin/main_shared
 
 build-debug: flags += -g -G
 build-debug: build
@@ -16,17 +10,23 @@ build-debug: build
 build-profile: flags += -lineinfo
 build-profile: build
 
-profile:
-	nvprof --csv --log-file output/$(profiling_filename) ./bin/main
+run:
+	bin/main_atomic
+	bin/main_shared
 
 build-and-run: build run
 
-build: bin/main
+clean:
+	rm -rf ./bin
+	rm -rf ./obj
 
-bin/main: obj/main.o | bin
+bin/main_atomic: obj/main_atomic.o | bin
 	nvcc $(flags) -o $@ $+
 
-obj/main.o: main.cu | obj
+bin/main_shared: obj/main_shared.o | bin
+	nvcc $(flags) -o $@ $+
+
+obj/%.o: %.cu common.hpp | obj
 	nvcc $(flags) -o $@ -c $<
 
 bin:
