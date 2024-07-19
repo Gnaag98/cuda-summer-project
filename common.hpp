@@ -48,7 +48,7 @@ const auto cell = Dimension{
 // Lattice node count, where each node is a cell corner.
 const auto node_count = Dimension{ (U + 1), (V + 1) };
 
-const int cell_particle_count = 256;
+const auto cell_particle_count = 256;
 
 // Total number of particles.
 const auto N = cell_particle_count * U * V;
@@ -61,7 +61,7 @@ const auto lattice_count = (U + 1) * (V + 1);
 const auto positions_bytes = positions_count * sizeof(float);
 const auto lattice_bytes = lattice_count * sizeof(float);
 
-const auto block_size = 256;
+const auto block_size = cell_particle_count;
 const auto block_count = (N + block_size - 1) / block_size;
 
 template<typename T>
