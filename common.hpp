@@ -3,6 +3,17 @@
 
 #include <random>
 #include <span>
+#include <type_traits>
+
+// Select float or double for all floating point types.
+using FloatingPoint = float;
+
+using FloatingPoint2 = std::conditional<
+    std::is_same<FloatingPoint, float>::value, float2, double2
+>::type;
+using FloatingPoint3 = std::conditional<
+    std::is_same<FloatingPoint, float>::value, float3, double3
+>::type;
 
 template<typename T>
 struct Dimension {
@@ -34,7 +45,7 @@ struct Rectangle {
 };
 
 // Size of 2D space.
-const auto space = Rectangle<float>::centered(2048.0f, 4096.0f);
+const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
 // Number of cells in the grid.
 const auto U = static_cast<int>(128);
@@ -58,8 +69,8 @@ const auto random_seed = 1u;
 // Allocation size for 1D arrays.
 const auto positions_count = N;
 const auto lattice_count = (U + 1) * (V + 1);
-const auto positions_bytes = positions_count * sizeof(float);
-const auto lattice_bytes = lattice_count * sizeof(float);
+const auto positions_bytes = positions_count * sizeof(FloatingPoint);
+const auto lattice_bytes = lattice_count * sizeof(FloatingPoint);
 
 const auto block_size = cell_particle_count;
 const auto block_count = (N + block_size - 1) / block_size;
@@ -74,15 +85,15 @@ constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T
 /**
  * Convert world x coordinate to horizontal cell index.
  */
-constexpr auto x_to_u(float x) {
-    return linear_map<float>(x, space.left(), space.right(), 0, U);
+constexpr auto x_to_u(FloatingPoint x) {
+    return linear_map<FloatingPoint>(x, space.left(), space.right(), 0, U);
 }
 
 /**
  * Convert world y coordinate to vertical cell index.
  */
-constexpr auto y_to_v(float y) {
-    return linear_map<float>(y, space.bottom(), space.top(), 0, V);
+constexpr auto y_to_v(FloatingPoint y) {
+    return linear_map<FloatingPoint>(y, space.bottom(), space.top(), 0, V);
 }
 
 constexpr auto get_node_index(const int x, const int y) {
@@ -93,14 +104,14 @@ constexpr auto get_particle_index(const int i, const int u, const int v) {
     return i + (u + v * U) * cell_particle_count;
 }
 
-void distribute_random(std::span<float> pos_x, std::span<float> pos_y) {
+void distribute_random(std::span<FloatingPoint> pos_x, std::span<FloatingPoint> pos_y) {
     // Randomly distribute particles in cells.
     auto random_engine = std::default_random_engine(random_seed);
-    auto distribution_x = std::uniform_real_distribution(
-        0.0f, cell.width
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.width
     );
-    auto distribution_y = std::uniform_real_distribution(
-        0.0f, cell.height
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.height
     );
 
     for (int v = 0; v < V; ++v) {
@@ -116,7 +127,7 @@ void distribute_random(std::span<float> pos_x, std::span<float> pos_y) {
     }
 }
 
-void distribute_cell_center(std::span<float> pos_x, std::span<float> pos_y) {
+void distribute_cell_center(std::span<FloatingPoint> pos_x, std::span<FloatingPoint> pos_y) {
     // Place all particles in the center of each cell.
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {

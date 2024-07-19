@@ -1,4 +1,4 @@
-flags = -std=c++20 --expt-relaxed-constexpr
+flags = -std=c++20 -arch=sm_60 --expt-relaxed-constexpr
 
 all: build
 

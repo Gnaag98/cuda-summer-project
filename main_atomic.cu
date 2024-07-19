@@ -6,8 +6,8 @@
 #include "common.hpp"
 
 __global__
-void add_density_atomic(const float *pos_x, const float *pos_y,
-        float *density) {
+void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
+        FloatingPoint *density) {
     const auto index = blockIdx.x * blockDim.x + threadIdx.x;
     if (index >= N) {
         return;
@@ -25,7 +25,7 @@ void add_density_atomic(const float *pos_x, const float *pos_y,
     const auto node_top_right    = int2{ static_cast<int>( ceil(u)), static_cast<int>( ceil(v)) };
 
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
-    const auto pos_relative_cell = float2{ u - node_bottom_left.x, v - node_bottom_left.y };
+    const auto pos_relative_cell = FloatingPoint2{ u - node_bottom_left.x, v - node_bottom_left.y };
     const auto weight_bottom_left  = (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y);
     const auto weight_bottom_right =      pos_relative_cell.x  * (1 - pos_relative_cell.y);
     const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
@@ -44,7 +44,7 @@ void add_density_atomic(const float *pos_x, const float *pos_y,
 }
 
 void store_density(std::filesystem::path filepath,
-                   std::span<const float> density) {
+                   std::span<const FloatingPoint> density) {
     auto density_file = std::ofstream(filepath);
     for (int row = 0; row < (V + 1); ++row) {
         for (int col = 0; col < (U + 1); ++col) {
@@ -56,14 +56,14 @@ void store_density(std::filesystem::path filepath,
 
 int main() {
     // Allocate particle positions and densities on the host.
-    auto h_pos_x = std::vector<float>(positions_count);
-    auto h_pos_y = std::vector<float>(positions_count);
-    auto h_density = std::vector<float>(lattice_count);
+    auto h_pos_x = std::vector<FloatingPoint>(positions_count);
+    auto h_pos_y = std::vector<FloatingPoint>(positions_count);
+    auto h_density = std::vector<FloatingPoint>(lattice_count);
 
     // Allocate particle positions and densities on the device.
-    float *d_pos_x;
-    float *d_pos_y;
-    float *d_density;
+    FloatingPoint *d_pos_x;
+    FloatingPoint *d_pos_y;
+    FloatingPoint *d_density;
     cudaMalloc(&d_pos_x, positions_bytes);
     cudaMalloc(&d_pos_y, positions_bytes);
     cudaMalloc(&d_density, lattice_bytes);

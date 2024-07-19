@@ -6,8 +6,8 @@
 #include "common.hpp"
 
 /// Requirement: blockDim.x == cell_particle_count.
-__global__ void add_density_shared(const float *pos_x, const float *pos_y,
-        float *density) {
+__global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
+        FloatingPoint *density) {
     const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (particle_index >= N) {
         return;
@@ -29,14 +29,14 @@ __global__ void add_density_shared(const float *pos_x, const float *pos_y,
     const auto v = y_to_v(y);
 
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
-    const auto pos_relative_cell = float2{ u - cell_origin.x, v - cell_origin.y };
+    const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
     const auto weight_bottom_left  = (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y);
     const auto weight_bottom_right =      pos_relative_cell.x  * (1 - pos_relative_cell.y);
     const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
     const auto weight_top_right    =      pos_relative_cell.x  *      pos_relative_cell.y;
 
     // Each particle will contribute to 4 cells.
-    __shared__ float density_shared[4][block_size];
+    __shared__ FloatingPoint density_shared[4][block_size];
 
     density_shared[0][index] = weight_bottom_left;
     density_shared[1][index] = weight_bottom_right;
@@ -64,7 +64,7 @@ __global__ void add_density_shared(const float *pos_x, const float *pos_y,
 }
 
 void store_density(std::filesystem::path filepath,
-                   std::span<const float> density) {
+                   std::span<const FloatingPoint> density) {
     auto density_file = std::ofstream(filepath);
     for (int row = 0; row < (V + 1); ++row) {
         for (int col = 0; col < (U + 1); ++col) {
@@ -75,7 +75,7 @@ void store_density(std::filesystem::path filepath,
 }
 
 void store_debug(std::filesystem::path filepath,
-                   std::span<const float> shared) {
+                   std::span<const FloatingPoint> shared) {
     auto density_file = std::ofstream(filepath);
     for (int row = 0; row < 4; ++row) {
         for (int col = 0; col < N; ++col) {
@@ -87,21 +87,21 @@ void store_debug(std::filesystem::path filepath,
 
 int main() {
     // Allocate particle positions and densities on the host.
-    auto h_pos_x = std::vector<float>(positions_count);
-    auto h_pos_y = std::vector<float>(positions_count);
-    auto h_density = std::vector<float>(lattice_count);
+    auto h_pos_x = std::vector<FloatingPoint>(positions_count);
+    auto h_pos_y = std::vector<FloatingPoint>(positions_count);
+    auto h_density = std::vector<FloatingPoint>(lattice_count);
 
     // Allocate particle positions and densities on the device.
-    float *d_pos_x;
-    float *d_pos_y;
-    float *d_density;
+    FloatingPoint *d_pos_x;
+    FloatingPoint *d_pos_y;
+    FloatingPoint *d_density;
     cudaMalloc(&d_pos_x, positions_bytes);
     cudaMalloc(&d_pos_y, positions_bytes);
     cudaMalloc(&d_density, lattice_bytes);
 
-    auto h_shared = std::vector<float>(4 * N);
-    float *d_shared;
-    cudaMalloc(&d_shared, 4 * N * sizeof(float));
+    auto h_shared = std::vector<FloatingPoint>(4 * N);
+    FloatingPoint *d_shared;
+    cudaMalloc(&d_shared, 4 * N * sizeof(FloatingPoint));
 
     distribute_random(h_pos_x, h_pos_y);
 
@@ -117,7 +117,7 @@ int main() {
     //cudaDeviceSynchronize();
     cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(h_shared.data(), d_shared, 4 * N * sizeof(float), cudaMemcpyDeviceToHost);
+    cudaMemcpy(h_shared.data(), d_shared, 4 * N * sizeof(FloatingPoint), cudaMemcpyDeviceToHost);
 
     // Free device memory.
     cudaFree(d_pos_x);
