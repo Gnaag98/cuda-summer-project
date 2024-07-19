@@ -123,8 +123,6 @@ int main() {
     cudaMemset(d_density, 0, lattice_bytes);
 
     add_density_shared<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
-    //add_density_debug<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density, d_shared);
-    //cudaDeviceSynchronize();
     cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
 
     // Free device memory.
