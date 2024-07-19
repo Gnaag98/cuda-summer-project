@@ -59,7 +59,7 @@ const auto cell = Dimension{
 // Lattice node count, where each node is a cell corner.
 const auto node_count = Dimension{ (U + 1), (V + 1) };
 
-const auto cell_particle_count = 256;
+const auto cell_particle_count = 1024;
 
 // Total number of particles.
 const auto N = cell_particle_count * U * V;
@@ -72,8 +72,9 @@ const auto lattice_count = (U + 1) * (V + 1);
 const auto positions_bytes = positions_count * sizeof(FloatingPoint);
 const auto lattice_bytes = lattice_count * sizeof(FloatingPoint);
 
-const auto block_size = cell_particle_count;
-const auto block_count = (N + block_size - 1) / block_size;
+const auto block_size = 128;
+const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
+const auto block_count = U * V * blocks_per_cell;
 
 template<typename T>
 constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T y2) {

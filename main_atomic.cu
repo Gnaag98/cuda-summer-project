@@ -74,8 +74,10 @@ int main() {
     cudaMemcpy(d_pos_x, h_pos_x.data(), positions_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
 
+    // Initialize density.
+    cudaMemset(d_density, 0, lattice_bytes);
+
     add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
-    cudaDeviceSynchronize();
     cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
 
     // Free device memory.
