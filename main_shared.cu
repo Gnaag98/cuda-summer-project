@@ -5,23 +5,40 @@
 
 #include "common.hpp"
 
-/// Requirement: blockDim.x == cell_particle_count.
+/// XXX: Requirement: particles per cell > blockDim.x.
 __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         FloatingPoint *density) {
-    const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
+    // Each particle will contribute to 4 cells.
+    __shared__ FloatingPoint density_shared[4][block_size];
+
+    // Reset the shared memory, since inactive threads will not overrwite
+    // garbage values.
+    density_shared[0][threadIdx.x] = 0;
+    density_shared[1][threadIdx.x] = 0;
+    density_shared[2][threadIdx.x] = 0;
+    density_shared[3][threadIdx.x] = 0;
+    __syncthreads();
+
+    const auto cell_index = blockIdx.x / blocks_per_cell;
+    const auto cell_block_index = blockIdx.x % blocks_per_cell;
+    const auto cell_particle_index = cell_block_index * block_size + threadIdx.x;
+    if (cell_particle_index >= cell_particle_count) {
+        return;
+    }
+    const auto particle_index = cell_index * cell_particle_count + cell_block_index * blockDim.x + threadIdx.x;
+    // XXX: This if statement might be unneccessary due to the above early
+    // return, since the number of particles per cell is constant.
     if (particle_index >= N) {
+        printf("This shouldn't happen! blockIdx.x: %d, threadIdx.x: %d\n", blockIdx.x, threadIdx.x);
         return;
     }
 
-    const auto index = threadIdx.x;
-
-    // XXX: Assumes one block per cell.
-    const auto cell_origin = uint2{ blockIdx.x % U, blockIdx.x / U };
+    const auto cell_origin = uint2{ cell_index % U, cell_index / U };
     // Node indices.
-    const auto index_bottom_left = get_node_index(cell_origin.x, cell_origin.y);
-    const auto index_bottom_right = get_node_index(cell_origin.x +1, cell_origin.y);
-    const auto index_top_left = get_node_index(cell_origin.x, cell_origin.y + 1);
-    const auto index_top_right = get_node_index(cell_origin.x + 1, cell_origin.y + 1);
+    const auto index_bottom_left  = get_node_index(cell_origin.x,     cell_origin.y);
+    const auto index_bottom_right = get_node_index(cell_origin.x + 1, cell_origin.y);
+    const auto index_top_left     = get_node_index(cell_origin.x,     cell_origin.y + 1);
+    const auto index_top_right    = get_node_index(cell_origin.x + 1, cell_origin.y + 1);
 
     const auto x = pos_x[particle_index];
     const auto y = pos_y[particle_index];
@@ -35,31 +52,28 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
     const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
     const auto weight_top_right    =      pos_relative_cell.x  *      pos_relative_cell.y;
 
-    // Each particle will contribute to 4 cells.
-    __shared__ FloatingPoint density_shared[4][block_size];
-
-    density_shared[0][index] = weight_bottom_left;
-    density_shared[1][index] = weight_bottom_right;
-    density_shared[2][index] = weight_top_left;
-    density_shared[3][index] = weight_top_right;
+    density_shared[0][threadIdx.x] = weight_bottom_left;
+    density_shared[1][threadIdx.x] = weight_bottom_right;
+    density_shared[2][threadIdx.x] = weight_top_left;
+    density_shared[3][threadIdx.x] = weight_top_right;
     __syncthreads();
 
     // in-place reduction in global memory
     for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
-        if (index < stride) {
-            density_shared[0][index] += density_shared[0][index + stride];
-            density_shared[1][index] += density_shared[1][index + stride];
-            density_shared[2][index] += density_shared[2][index + stride];
-            density_shared[3][index] += density_shared[3][index + stride];
+        if (threadIdx.x < stride) {
+            density_shared[0][threadIdx.x] += density_shared[0][threadIdx.x + stride];
+            density_shared[1][threadIdx.x] += density_shared[1][threadIdx.x + stride];
+            density_shared[2][threadIdx.x] += density_shared[2][threadIdx.x + stride];
+            density_shared[3][threadIdx.x] += density_shared[3][threadIdx.x + stride];
         }
         __syncthreads();
     }
 
-    if (index == 0) {
-        atomicAdd(&density[index_bottom_left], density_shared[0][0]);
+    if (threadIdx.x == 0) {
+        atomicAdd(&density[index_bottom_left],  density_shared[0][0]);
         atomicAdd(&density[index_bottom_right], density_shared[1][0]);
-        atomicAdd(&density[index_top_left], density_shared[2][0]);
-        atomicAdd(&density[index_top_right], density_shared[3][0]);
+        atomicAdd(&density[index_top_left],     density_shared[2][0]);
+        atomicAdd(&density[index_top_right],    density_shared[3][0]);
     }
 }
 
