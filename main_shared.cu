@@ -99,10 +99,6 @@ int main() {
     cudaMalloc(&d_pos_y, positions_bytes);
     cudaMalloc(&d_density, lattice_bytes);
 
-    auto h_shared = std::vector<FloatingPoint>(4 * N);
-    FloatingPoint *d_shared;
-    cudaMalloc(&d_shared, 4 * N * sizeof(FloatingPoint));
-
     distribute_random(h_pos_x, h_pos_y);
 
     // Copy positions from the host to the device.
@@ -117,17 +113,12 @@ int main() {
     //cudaDeviceSynchronize();
     cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
 
-    cudaMemcpy(h_shared.data(), d_shared, 4 * N * sizeof(FloatingPoint), cudaMemcpyDeviceToHost);
-
     // Free device memory.
     cudaFree(d_pos_x);
     cudaFree(d_pos_y);
-
-    cudaFree(d_shared);
 
     // Store data to files.
     const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
     store_density(output_directory / "density_shared.csv", h_density);
-    store_debug(output_directory / "debug_shared.csv", h_shared);
 }
