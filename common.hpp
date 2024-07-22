@@ -75,6 +75,7 @@ const auto random_seed = 1u;
 const auto positions_count = N;
 const auto lattice_count = (U + 1) * (V + 1);
 const auto positions_bytes = positions_count * sizeof(FloatingPoint);
+const auto indices_bytes = positions_count * sizeof(size_t);
 const auto lattice_bytes = lattice_count * sizeof(FloatingPoint);
 
 const auto block_size = 128;
@@ -150,8 +151,6 @@ void distribute_cell_center(std::span<FloatingPoint> pos_x, std::span<FloatingPo
     }
 }
 
-template<size_t tile_size>
-__device__
 /**
  * Reduce densities using shuffle.
  * 
@@ -162,6 +161,8 @@ __device__
  * 
  * @returns um of weights. Only the first thread of the tile holds the full sum.
  */
+template<size_t tile_size>
+__device__
 auto tile_reduce(cooperative_groups::thread_block_tile<tile_size> tile,
         FloatingPoint4 weights) {
     for (auto i = tile.size() / 2; i > 0; i /= 2) {
