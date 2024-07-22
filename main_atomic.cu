@@ -8,39 +8,54 @@
 __global__
 void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         FloatingPoint *density) {
-    const auto index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= N) {
+
+    using namespace cooperative_groups;
+
+    const auto cell_index = blockIdx.x / blocks_per_cell;
+    const auto cell_block_index = blockIdx.x % blocks_per_cell;
+    const auto cell_particle_index = cell_block_index * block_size + threadIdx.x;
+    if (cell_particle_index >= cell_particle_count) {
+        return;
+    }
+    const auto particle_index = cell_index * cell_particle_count + cell_block_index * blockDim.x + threadIdx.x;
+    // XXX: This if statement might be unneccessary due to the above early
+    // return, since the number of particles per cell is constant.
+    if (particle_index >= N) {
+        printf("This shouldn't happen! blockIdx.x: %d, threadIdx.x: %d\n", blockIdx.x, threadIdx.x);
         return;
     }
 
-    const auto x = pos_x[index];
-    const auto y = pos_y[index];
+    const auto cell_origin = uint2{ cell_index % U, cell_index / U };
+    // Node indices.
+    const auto index_bottom_left  = get_node_index(cell_origin.x,     cell_origin.y);
+    const auto index_bottom_right = get_node_index(cell_origin.x + 1, cell_origin.y);
+    const auto index_top_left     = get_node_index(cell_origin.x,     cell_origin.y + 1);
+    const auto index_top_right    = get_node_index(cell_origin.x + 1, cell_origin.y + 1);
+
+    const auto x = pos_x[particle_index];
+    const auto y = pos_y[particle_index];
     const auto u = x_to_u(x);
     const auto v = y_to_v(y);
 
-    // Node coordinates.
-    const auto node_bottom_left  = int2{ static_cast<int>(floor(u)), static_cast<int>(floor(v)) };
-    const auto node_bottom_right = int2{ static_cast<int>( ceil(u)), static_cast<int>(floor(v)) };
-    const auto node_top_left     = int2{ static_cast<int>(floor(u)), static_cast<int>( ceil(v)) };
-    const auto node_top_right    = int2{ static_cast<int>( ceil(u)), static_cast<int>( ceil(v)) };
-
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
-    const auto pos_relative_cell = FloatingPoint2{ u - node_bottom_left.x, v - node_bottom_left.y };
-    const auto weight_bottom_left  = (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y);
-    const auto weight_bottom_right =      pos_relative_cell.x  * (1 - pos_relative_cell.y);
-    const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
-    const auto weight_top_right    =      pos_relative_cell.x  *      pos_relative_cell.y;
+    const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
+    const auto weights = FloatingPoint4{
+        (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y),
+             pos_relative_cell.x  * (1 - pos_relative_cell.y),
+        (1 - pos_relative_cell.x) *      pos_relative_cell.y,
+             pos_relative_cell.x  *      pos_relative_cell.y
+    };
 
-    // Node indices.
-    const auto index_bottom_left = get_node_index(node_bottom_left.x, node_bottom_left.y);
-    const auto index_bottom_right = get_node_index(node_bottom_right.x, node_bottom_right.y);
-    const auto index_top_left = get_node_index(node_top_left.x, node_top_left.y);
-    const auto index_top_right = get_node_index(node_top_right.x, node_top_right.y);
-
-    atomicAdd(&density[index_bottom_left], weight_bottom_left);
-    atomicAdd(&density[index_bottom_right], weight_bottom_right);
-    atomicAdd(&density[index_top_left], weight_top_left);
-    atomicAdd(&density[index_top_right], weight_top_right);
+    // Reduce densities per warp.
+    auto tile = tiled_partition<warp_size>(this_thread_block());
+    const auto densities_tile = tile_reduce<warp_size>(tile, weights);
+    // Only the first thread of the tile holds the fully reduced sum.
+    if (tile.thread_rank() == 0) {
+        atomicAdd(&density[index_bottom_left], densities_tile.x);
+        atomicAdd(&density[index_bottom_right], densities_tile.y);
+        atomicAdd(&density[index_top_left], densities_tile.z);
+        atomicAdd(&density[index_top_right], densities_tile.w);
+    }
 }
 
 void store_density(std::filesystem::path filepath,
