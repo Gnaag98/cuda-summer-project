@@ -5,6 +5,8 @@
 #include <span>
 #include <type_traits>
 
+#include <cooperative_groups.h>
+
 // Select float or double for all floating point types.
 using FloatingPoint = float;
 
@@ -13,6 +15,9 @@ using FloatingPoint2 = std::conditional<
 >::type;
 using FloatingPoint3 = std::conditional<
     std::is_same<FloatingPoint, float>::value, float3, double3
+>::type;
+using FloatingPoint4 = std::conditional<
+    std::is_same<FloatingPoint, float>::value, float4, double4
 >::type;
 
 template<typename T>
@@ -75,6 +80,8 @@ const auto lattice_bytes = lattice_count * sizeof(FloatingPoint);
 const auto block_size = 128;
 const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
 const auto block_count = U * V * blocks_per_cell;
+
+const auto warp_size = 32;
 
 template<typename T>
 constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T y2) {
@@ -141,6 +148,29 @@ void distribute_cell_center(std::span<FloatingPoint> pos_x, std::span<FloatingPo
             }
         }
     }
+}
+
+template<size_t tile_size>
+__device__
+/**
+ * Reduce densities using shuffle.
+ * 
+ * The first thread in each tile will contain the full sum.
+ * 
+ * @param tile Thread group with static size, where the size 32 is a full warp.
+ * @param weights Particle contribution to the density.
+ * 
+ * @returns um of weights. Only the first thread of the tile holds the full sum.
+ */
+auto tile_reduce(cooperative_groups::thread_block_tile<tile_size> tile,
+        FloatingPoint4 weights) {
+    for (auto i = tile.size() / 2; i > 0; i /= 2) {
+        weights.x += tile.shfl_down(weights.x, i);
+        weights.y += tile.shfl_down(weights.y, i);
+        weights.z += tile.shfl_down(weights.z, i);
+        weights.w += tile.shfl_down(weights.w, i);
+    }
+    return weights;
 }
 
 #endif

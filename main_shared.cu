@@ -8,16 +8,7 @@
 /// XXX: Requirement: particles per cell > blockDim.x.
 __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         FloatingPoint *density) {
-    // Each particle will contribute to 4 cells.
-    __shared__ FloatingPoint density_shared[4][block_size];
-
-    // Reset the shared memory, since inactive threads will not overrwite
-    // garbage values.
-    density_shared[0][threadIdx.x] = 0;
-    density_shared[1][threadIdx.x] = 0;
-    density_shared[2][threadIdx.x] = 0;
-    density_shared[3][threadIdx.x] = 0;
-    __syncthreads();
+    using namespace cooperative_groups;
 
     const auto cell_index = blockIdx.x / blocks_per_cell;
     const auto cell_block_index = blockIdx.x % blocks_per_cell;
@@ -47,33 +38,41 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
 
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
     const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
-    const auto weight_bottom_left  = (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y);
-    const auto weight_bottom_right =      pos_relative_cell.x  * (1 - pos_relative_cell.y);
-    const auto weight_top_left     = (1 - pos_relative_cell.x) *      pos_relative_cell.y;
-    const auto weight_top_right    =      pos_relative_cell.x  *      pos_relative_cell.y;
+    const auto weights = FloatingPoint4{
+        (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y),
+             pos_relative_cell.x  * (1 - pos_relative_cell.y),
+        (1 - pos_relative_cell.x) *      pos_relative_cell.y,
+             pos_relative_cell.x  *      pos_relative_cell.y
+    };
 
-    density_shared[0][threadIdx.x] = weight_bottom_left;
-    density_shared[1][threadIdx.x] = weight_bottom_right;
-    density_shared[2][threadIdx.x] = weight_top_left;
-    density_shared[3][threadIdx.x] = weight_top_right;
+    // Reduce densities per warp.
+    auto tile = tiled_partition<warp_size>(this_thread_block());
+    const auto densities_tile = tile_reduce<warp_size>(tile, weights);
+    const auto tile_index = threadIdx.x / warp_size;
+    const auto shared_size = block_size / warp_size;
+    __shared__ FloatingPoint4 densities_shared[shared_size];
+    // Only the first thread of the tile holds the fully reduced sum.
+    if (tile.thread_rank() == 0) {
+        densities_shared[tile_index] = densities_tile;
+    }
     __syncthreads();
 
     // in-place reduction in global memory
-    for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    for (int stride = shared_size; stride > 0; stride >>= 1) {
         if (threadIdx.x < stride) {
-            density_shared[0][threadIdx.x] += density_shared[0][threadIdx.x + stride];
-            density_shared[1][threadIdx.x] += density_shared[1][threadIdx.x + stride];
-            density_shared[2][threadIdx.x] += density_shared[2][threadIdx.x + stride];
-            density_shared[3][threadIdx.x] += density_shared[3][threadIdx.x + stride];
+            densities_shared[threadIdx.x].x += densities_shared[threadIdx.x + stride].x;
+            densities_shared[threadIdx.x].y += densities_shared[threadIdx.x + stride].y;
+            densities_shared[threadIdx.x].z += densities_shared[threadIdx.x + stride].z;
+            densities_shared[threadIdx.x].w += densities_shared[threadIdx.x + stride].w;
         }
         __syncthreads();
     }
 
     if (threadIdx.x == 0) {
-        atomicAdd(&density[index_bottom_left],  density_shared[0][0]);
-        atomicAdd(&density[index_bottom_right], density_shared[1][0]);
-        atomicAdd(&density[index_top_left],     density_shared[2][0]);
-        atomicAdd(&density[index_top_right],    density_shared[3][0]);
+        atomicAdd(&density[index_bottom_left],  densities_shared[0].x);
+        atomicAdd(&density[index_bottom_right], densities_shared[0].y);
+        atomicAdd(&density[index_top_left],     densities_shared[0].z);
+        atomicAdd(&density[index_top_right],    densities_shared[0].w);
     }
 }
 
@@ -83,17 +82,6 @@ void store_density(std::filesystem::path filepath,
     for (int row = 0; row < (V + 1); ++row) {
         for (int col = 0; col < (U + 1); ++col) {
             density_file << density[row * (U + 1) + col] << ',';
-        }
-        density_file << '\n';
-    }
-}
-
-void store_debug(std::filesystem::path filepath,
-                   std::span<const FloatingPoint> shared) {
-    auto density_file = std::ofstream(filepath);
-    for (int row = 0; row < 4; ++row) {
-        for (int col = 0; col < N; ++col) {
-            density_file << shared[row * N + col] << ',';
         }
         density_file << '\n';
     }
