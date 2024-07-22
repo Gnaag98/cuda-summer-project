@@ -3,6 +3,8 @@
 #include <iostream>
 #include <vector>
 
+#include <cub/block/block_reduce.cuh>
+
 #include "common.hpp"
 
 /// Calculate the cell index of each particle.
@@ -40,10 +42,12 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
 
     const auto cell_origin = uint2{ cell_index % U, cell_index / U };
     // Node indices.
-    const auto index_bottom_left  = get_node_index(cell_origin.x,     cell_origin.y);
-    const auto index_bottom_right = get_node_index(cell_origin.x + 1, cell_origin.y);
-    const auto index_top_left     = get_node_index(cell_origin.x,     cell_origin.y + 1);
-    const auto index_top_right    = get_node_index(cell_origin.x + 1, cell_origin.y + 1);
+    const int incides[] = {
+        get_node_index(cell_origin.x,     cell_origin.y),
+        get_node_index(cell_origin.x + 1, cell_origin.y),
+        get_node_index(cell_origin.x,     cell_origin.y + 1),
+        get_node_index(cell_origin.x + 1, cell_origin.y + 1)
+    };
 
     const auto x = pos_x[particle_index];
     const auto y = pos_y[particle_index];
@@ -52,41 +56,22 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
 
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
     const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
-    const auto weights = FloatingPoint4{
+    const FloatingPoint weights[] = {
         (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y),
              pos_relative_cell.x  * (1 - pos_relative_cell.y),
         (1 - pos_relative_cell.x) *      pos_relative_cell.y,
              pos_relative_cell.x  *      pos_relative_cell.y
     };
 
-    // Reduce densities per warp.
-    auto tile = tiled_partition<warp_size>(this_thread_block());
-    const auto densities_tile = tile_reduce<warp_size>(tile, weights);
-    const auto tile_index = threadIdx.x / warp_size;
-    const auto shared_size = block_size / warp_size;
-    __shared__ FloatingPoint4 densities_shared[shared_size];
-    // Only the first thread of the tile holds the fully reduced sum.
-    if (tile.thread_rank() == 0) {
-        densities_shared[tile_index] = densities_tile;
-    }
-    __syncthreads();
-
-    // in-place reduction in global memory
-    for (int stride = shared_size; stride > 0; stride >>= 1) {
-        if (threadIdx.x < stride) {
-            densities_shared[threadIdx.x].x += densities_shared[threadIdx.x + stride].x;
-            densities_shared[threadIdx.x].y += densities_shared[threadIdx.x + stride].y;
-            densities_shared[threadIdx.x].z += densities_shared[threadIdx.x + stride].z;
-            densities_shared[threadIdx.x].w += densities_shared[threadIdx.x + stride].w;
+    using BlockReduce = cub::BlockReduce<FloatingPoint, block_size>;
+    using TempStorage = BlockReduce::TempStorage;
+    __shared__ TempStorage temp_storage;
+    auto block_reduce = BlockReduce{ temp_storage };
+    for (auto i = 0; i < 4; ++i) {
+        const auto density_reduced = block_reduce.Sum(weights[i]);
+        if (threadIdx.x == 0) {
+            atomicAdd(&density[incides[i]],  density_reduced);
         }
-        __syncthreads();
-    }
-
-    if (threadIdx.x == 0) {
-        atomicAdd(&density[index_bottom_left],  densities_shared[0].x);
-        atomicAdd(&density[index_bottom_right], densities_shared[0].y);
-        atomicAdd(&density[index_top_left],     densities_shared[0].z);
-        atomicAdd(&density[index_top_right],    densities_shared[0].w);
     }
 }
 
@@ -125,12 +110,12 @@ int main() {
     cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
 
     // Initialize density.
-    /* cudaMemset(d_density, 0, lattice_bytes); */
+    cudaMemset(d_density, 0, lattice_bytes);
 
-    get_cell_index_per_particle<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_cell_indices);
+    //get_cell_index_per_particle<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_cell_indices);
 
-    /* add_density_shared<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
-    cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost); */
+    add_density_shared<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
+    cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
 
     // Free device memory.
     cudaFree(d_pos_x);
@@ -139,7 +124,7 @@ int main() {
     /* cudaFree(d_density); */
 
     // Store data to files.
-    /* const auto output_directory = std::filesystem::path("output");
+    const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
-    store_density(output_directory / "density_shared.csv", h_density); */
+    store_density(output_directory / "density_shared.csv", h_density);
 }
