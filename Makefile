@@ -26,7 +26,7 @@ bin/main_atomic: obj/main_atomic.o | bin
 bin/main_shared: obj/main_shared.o | bin
 	nvcc $(flags) -o $@ $+
 
-obj/%.o: %.cu common.hpp | obj
+obj/%.o: %.cu common.cuh | obj
 	nvcc $(flags) -o $@ -c $<
 
 bin:
