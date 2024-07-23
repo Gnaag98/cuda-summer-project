@@ -1,6 +1,8 @@
 #ifndef COMMON_HPP
 #define COMMON_HPP
 
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <span>
 #include <type_traits>
@@ -148,6 +150,17 @@ void distribute_cell_center(std::span<FloatingPoint> pos_x, std::span<FloatingPo
                 pos_y[particle_index] = y;
             }
         }
+    }
+}
+
+void store_density(std::filesystem::path filepath,
+                   std::span<const FloatingPoint> density) {
+    auto density_file = std::ofstream(filepath);
+    for (int row = 0; row < (V + 1); ++row) {
+        for (int col = 0; col < (U + 1); ++col) {
+            density_file << density[row * (U + 1) + col] << ',';
+        }
+        density_file << '\n';
     }
 }
 

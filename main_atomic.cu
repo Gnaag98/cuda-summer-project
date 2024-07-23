@@ -1,9 +1,7 @@
-#include <filesystem>
-#include <fstream>
 #include <iostream>
 #include <vector>
 
-#include "common.hpp"
+#include "common.cuh"
 
 __global__
 void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
@@ -55,17 +53,6 @@ void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         atomicAdd(&density[index_bottom_right], densities_tile.y);
         atomicAdd(&density[index_top_left], densities_tile.z);
         atomicAdd(&density[index_top_right], densities_tile.w);
-    }
-}
-
-void store_density(std::filesystem::path filepath,
-                   std::span<const FloatingPoint> density) {
-    auto density_file = std::ofstream(filepath);
-    for (int row = 0; row < (V + 1); ++row) {
-        for (int col = 0; col < (U + 1); ++col) {
-            density_file << density[row * (U + 1) + col] << ',';
-        }
-        density_file << '\n';
     }
 }
 
