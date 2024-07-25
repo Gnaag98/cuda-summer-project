@@ -5,6 +5,20 @@
 
 #include "common.cuh"
 
+/// https://graphics.stanford.edu/%7Eseander/bithacks.html#RoundUpPowerOf2
+constexpr
+auto next_pow2(uint32_t v) {
+    v--;
+    v |= v >> 1;
+    v |= v >> 2;
+    v |= v >> 4;
+    v |= v >> 8;
+    v |= v >> 16;
+    v++;
+    v += v == 0;
+    return v;
+}
+
 /// Calculate the cell index of each particle.
 __global__
 void get_cell_index_per_particle(const FloatingPoint *pos_x,
@@ -24,25 +38,53 @@ void get_cell_index_per_particle(const FloatingPoint *pos_x,
 
 __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         FloatingPoint *density) {
-    using namespace cooperative_groups;
+    // Each particle will contribute to 4 cells.
+    __shared__ FloatingPoint density_shared[4][block_size];
 
-    const auto cell_index = blockIdx.x / blocks_per_cell;
-    const auto cell_block_index = blockIdx.x % blocks_per_cell;
-    const auto cell_particle_index = cell_block_index * block_size + threadIdx.x;
-    if (cell_particle_index >= cell_particle_count) {
-        return;
-    }
-    const auto particle_index = cell_index * cell_particle_count + cell_block_index * blockDim.x + threadIdx.x;
-    // XXX: This if statement might be unneccessary due to the above early
-    // return, since the number of particles per cell is constant.
-    if (particle_index >= N) {
-        printf("This shouldn't happen! blockIdx.x: %d, threadIdx.x: %d\n", blockIdx.x, threadIdx.x);
-        return;
-    }
+    // Reset the shared memory, since inactive threads will not overrwite
+    // garbage values.
+    density_shared[0][threadIdx.x] = 0;
+    density_shared[1][threadIdx.x] = 0;
+    density_shared[2][threadIdx.x] = 0;
+    density_shared[3][threadIdx.x] = 0;
+    __syncthreads();
 
+    // XXX: Assumes both fixed and equal number of cells per block.
+    const auto cells_per_block = cell_count / gridDim.x;
+    
+    // Block-specific variables.
+    const auto first_cell_in_block_index = blockIdx.x * cells_per_block;
+    const auto first_particle_in_block_index = blockIdx.x * blockDim.x;
+
+    // Cell-specific variables.
+    // XXX: Assumes both fixed and equal number of cells per block.
+    const auto cell_index_rel_block = threadIdx.x / cell_particle_count;
+    
+    // Thread-specific variables.
+    const auto particle_index_rel_block = threadIdx.x;
+    const auto particle_index = first_particle_in_block_index + particle_index_rel_block;
+    if (particle_index >= N) return;
+    const auto cell_index = first_cell_in_block_index + cell_index_rel_block;
+    const auto particle_index_rel_cell = particle_index_rel_block % cell_particle_count;
+
+    /* printf(
+        "block: %d, thread: %d | cell_index: %d = %d + %d\n",
+        blockIdx.x, threadIdx.x, cell_index, first_cell_in_block_index, cell_index_rel_block
+    ); */
+    /* printf(
+        "block: %d, thread: %d | first_cell_in_block_index: %d = %d + %d\n",
+        blockIdx.x, threadIdx.x,
+        first_cell_in_block_index, blockIdx.x, cells_per_block
+    ); */
+    /* printf(
+        "block: %d, thread: %d | particle_index: %d, particle_index_rel_cell: %d, particle_index_rel_block: %d\n",
+        blockIdx.x, threadIdx.x,
+        particle_index, particle_index_rel_cell, particle_index_rel_block
+    ); */
+    
     const auto cell_origin = uint2{ cell_index % U, cell_index / U };
     // Node indices.
-    const int incides[] = {
+    const auto indices = uint4{
         get_node_index(cell_origin.x,     cell_origin.y),
         get_node_index(cell_origin.x + 1, cell_origin.y),
         get_node_index(cell_origin.x,     cell_origin.y + 1),
@@ -63,15 +105,29 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
              pos_relative_cell.x  *      pos_relative_cell.y
     };
 
-    using BlockReduce = cub::BlockReduce<FloatingPoint, block_size>;
-    using TempStorage = BlockReduce::TempStorage;
-    __shared__ TempStorage temp_storage;
-    auto block_reduce = BlockReduce{ temp_storage };
-    for (auto i = 0; i < 4; ++i) {
-        const auto density_reduced = block_reduce.Sum(weights[i]);
-        if (threadIdx.x == 0) {
-            atomicAdd(&density[incides[i]],  density_reduced);
+    density_shared[0][threadIdx.x] = weights[0];
+    density_shared[1][threadIdx.x] = weights[1];
+    density_shared[2][threadIdx.x] = weights[2];
+    density_shared[3][threadIdx.x] = weights[3];
+    __syncthreads();
+
+    // in-place reduction in shared memory
+    // XXX: Assumes both fixed and equal number of particles per cell.
+    for (int stride = next_pow2(cell_particle_count) / 2; stride > 0; stride /= 2) {
+        if (particle_index_rel_cell < stride) {
+            density_shared[0][threadIdx.x] += density_shared[0][threadIdx.x + stride];
+            density_shared[1][threadIdx.x] += density_shared[1][threadIdx.x + stride];
+            density_shared[2][threadIdx.x] += density_shared[2][threadIdx.x + stride];
+            density_shared[3][threadIdx.x] += density_shared[3][threadIdx.x + stride];
         }
+        __syncthreads();
+    }
+
+    if (particle_index_rel_cell == 0) {
+        atomicAdd(&density[indices.x], density_shared[0][threadIdx.x]);
+        atomicAdd(&density[indices.y], density_shared[1][threadIdx.x]);
+        atomicAdd(&density[indices.z], density_shared[2][threadIdx.x]);
+        atomicAdd(&density[indices.w], density_shared[3][threadIdx.x]);
     }
 }
 
@@ -108,7 +164,8 @@ int main() {
         d_pos_x, d_pos_y, d_cell_indices
     );
     
-    const auto density_kernel_block_count = cell_count * blocks_per_cell;
+    // XXX: Only valid if N % block_size == 0;
+    const auto density_kernel_block_count = N / block_size;
     add_density_shared<<<
         density_kernel_block_count, block_size
     >>>(

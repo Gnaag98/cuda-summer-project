@@ -10,7 +10,7 @@
 
 #include <cooperative_groups.h>
 
-#define DEBUG_DISTRIBUTION
+//#define DEBUG_DISTRIBUTION
 #define DEBUG_AVOID_EDGES
 
 // Select float or double for all floating point types.
@@ -58,7 +58,7 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
-const auto cell_particle_count = 2;
+const auto cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
 const auto U = static_cast<int>(512);
@@ -72,10 +72,7 @@ const int debug_distribution[V][U] = {
     { cell_particle_count, cell_particle_count }
 };
 #endif
-const auto block_size = 128;
-
-/// TODO: Remove this when it stops being used by the shared version.
-const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
+const auto block_size = 32;
 
 const auto cell_count = U * V;
 
@@ -153,7 +150,7 @@ constexpr auto y_to_v(FloatingPoint y) {
     return linear_map<FloatingPoint>(y, space.bottom(), space.top(), 0, V);
 }
 
-constexpr auto get_node_index(const int x, const int y) {
+constexpr auto get_node_index(const uint x, const uint y) {
     return x + y * (U + 1);
 }
 
