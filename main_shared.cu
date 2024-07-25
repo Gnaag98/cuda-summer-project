@@ -124,13 +124,13 @@ auto next_pow2(uint32_t v) {
 
 __device__
 auto get_cell_index_rel_block(
-        const uint first_cell_in_block_index, 
+        const uint first_instruction_in_block_index,
         const uint block_cell_count,
         const uint *particle_count_per_cell) {
     auto cell_first_particle_index = 0;
     for (auto i = 0u; i < block_cell_count; ++i) {
-        const auto cell_index = first_cell_in_block_index + i;
-        const auto cell_particle_count = particle_count_per_cell[cell_index];
+        const auto instruction_index = first_instruction_in_block_index + i;
+        const auto cell_particle_count = particle_count_per_cell[instruction_index];
         if (threadIdx.x < cell_first_particle_index + cell_particle_count) {
             return i;
         }
@@ -161,6 +161,7 @@ __global__ void add_density_shared(
         const FloatingPoint *pos_x,
         const FloatingPoint *pos_y,
         FloatingPoint *density,
+        const uint *first_instruction_index_per_block,
         const uint *first_cell_index_per_block,
         const uint *cell_count_per_block,
         const uint *first_particle_index_per_cell,
@@ -182,23 +183,24 @@ __global__ void add_density_shared(
     __syncthreads();
 
     // Block-specific variables.
+    const auto first_instruction_in_block_index = first_instruction_index_per_block[blockIdx.x];
     const auto first_cell_in_block_index = first_cell_index_per_block[blockIdx.x];
     const auto block_cell_count = cell_count_per_block[blockIdx.x];
 
     // Cell-specific variables.
     // XXX: Assumes both fixed and equal number of cells per block.
     const auto cell_index_rel_block = get_cell_index_rel_block(
-        first_cell_in_block_index, block_cell_count, particle_count_per_cell);
+        first_instruction_in_block_index, block_cell_count,
+        particle_count_per_cell);
     if (cell_index_rel_block >= block_cell_count) {
-        
-        printf("Error! Block %d: Could not assign cell index to thread %d. Expression: %d >= %d\n",
-            blockIdx.x, threadIdx.x,
-            cell_index_rel_block, block_cell_count);
+        printf("Error! Block %d: Could not assign cell index to thread %d.\n",
+            blockIdx.x, threadIdx.x);
         return;
     }
+    const auto instruction_index = first_instruction_in_block_index + cell_index_rel_block;
     const auto cell_index = first_cell_in_block_index + cell_index_rel_block;
-    const auto first_particle_in_cell_index = first_particle_index_per_cell[cell_index];
-    const auto cell_particle_count = particle_count_per_cell[cell_index];
+    const auto first_particle_in_cell_index = first_particle_index_per_cell[instruction_index];
+    const auto cell_particle_count = particle_count_per_cell[instruction_index];
     
     // Thread-specific variables.
     const auto particle_index_rel_cell = particle_index - first_particle_in_cell_index;
@@ -288,15 +290,50 @@ int main() {
     load(h_cell_indices, d_cell_indices);
     auto kernel_data = get_kernel_data(h_cell_indices);
 
-    // XXX: This is a mess.
+    /* std::cout << "first_instruction_index_per_block: ";
+    for (const auto v : kernel_data.first_instruction_index_per_block) {
+        std::cout << v << ", ";
+    }
+    std::cout << '\n';
+    std::cout << "first_cell_index_per_block: ";
+    for (const auto v : kernel_data.first_cell_index_per_block) {
+        std::cout << v << ", ";
+    }
+    std::cout << '\n';
+    std::cout << "cell_count_per_block: ";
+    for (const auto v : kernel_data.cell_count_per_block) {
+        std::cout << v << ", ";
+    }
+    std::cout << '\n';
+    std::cout << "first_particle_index_per_cell: ";
+    for (const auto v : kernel_data.first_particle_index_per_cell) {
+        std::cout << v << ", ";
+    }
+    std::cout << '\n';
+    std::cout << "particle_count_per_cell: ";
+    for (const auto v : kernel_data.particle_count_per_cell) {
+        std::cout << v << ", ";
+    }
+    std::cout << '\n';
+
+    std::cout << kernel_data.first_instruction_index_per_block.size() << '\n';
+    std::cout << kernel_data.first_cell_index_per_block.size() << '\n';
+    std::cout << kernel_data.cell_count_per_block.size() << '\n';
+    std::cout << kernel_data.first_particle_index_per_cell.size() << '\n';
+    std::cout << kernel_data.particle_count_per_cell.size() << '\n'; */
+
+    // XXX: This is a mess.first_instruction_index_per_block
+    decltype(kernel_data.first_instruction_index_per_block)::value_type *d_first_instruction_index_per_block;
     decltype(kernel_data.first_cell_index_per_block)::value_type *d_first_cell_index_per_block;
     decltype(kernel_data.cell_count_per_block)::value_type *d_cell_count_per_block;
     decltype(kernel_data.first_particle_index_per_cell)::value_type *d_first_particle_index_per_cell;
     decltype(kernel_data.particle_count_per_cell)::value_type *d_particle_count_per_cell;
+    allocate_array(&d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block.size());
     allocate_array(&d_first_cell_index_per_block, kernel_data.first_cell_index_per_block.size());
     allocate_array(&d_cell_count_per_block, kernel_data.cell_count_per_block.size());
     allocate_array(&d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell.size());
     allocate_array(&d_particle_count_per_cell, kernel_data.particle_count_per_cell.size());
+    store(d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block);
     store(d_first_cell_index_per_block, kernel_data.first_cell_index_per_block);
     store(d_cell_count_per_block, kernel_data.cell_count_per_block);
     store(d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell);
@@ -306,6 +343,7 @@ int main() {
         block_count, block_size
     >>>(
         d_pos_x, d_pos_y, d_density,
+        d_first_instruction_index_per_block,
         d_first_cell_index_per_block, d_cell_count_per_block,
         d_first_particle_index_per_cell, d_particle_count_per_cell
     );

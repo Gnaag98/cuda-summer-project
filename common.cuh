@@ -58,20 +58,18 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
-const auto cell_particle_count = 2;
+const auto cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
-const auto U = static_cast<int>(2);
-const auto V = static_cast<int>(2);
+const auto U = static_cast<int>(512);
+const auto V = static_cast<int>(1024);
 
 #else
-const auto U = static_cast<int>(3);
-const auto V = static_cast<int>(4);
+const auto U = static_cast<int>(2);
+const auto V = static_cast<int>(2);
 const int debug_distribution[V][U] = {
-    { 2, 4, 4 },
-    { 2, 2, 2 },
-    { 1, 3, 4 },
-    { 1, 2, 1 }
+    { 2, 1 },
+    { 3, 2 }
 };
 #endif
 const auto block_size = 4;
