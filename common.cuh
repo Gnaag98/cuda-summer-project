@@ -10,7 +10,7 @@
 
 #include <cooperative_groups.h>
 
-//#define DEBUG_DISTRIBUTION
+#define DEBUG_DISTRIBUTION
 #define DEBUG_AVOID_EDGES
 
 // Select float or double for all floating point types.
@@ -58,21 +58,23 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
-const auto cell_particle_count = 16;
+const auto cell_particle_count = 2;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
-const auto U = static_cast<int>(512);
-const auto V = static_cast<int>(1024);
-
-#else
 const auto U = static_cast<int>(2);
 const auto V = static_cast<int>(2);
+
+#else
+const auto U = static_cast<int>(3);
+const auto V = static_cast<int>(4);
 const int debug_distribution[V][U] = {
-    { cell_particle_count, cell_particle_count },
-    { cell_particle_count, cell_particle_count }
+    { 2, 4, 4 },
+    { 2, 2, 2 },
+    { 1, 3, 4 },
+    { 1, 2, 1 }
 };
 #endif
-const auto block_size = 32;
+const auto block_size = 4;
 
 const auto cell_count = U * V;
 
@@ -98,6 +100,8 @@ const auto N = ([]{
     return n;
 })();
 #endif
+
+const auto block_count = (N + block_size - 1) / block_size;
 
 const auto random_seed = 1u;
 
@@ -179,7 +183,8 @@ void distribute_random(std::span<FloatingPoint> pos_x,
 #ifdef DEBUG_DISTRIBUTION
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
-            for (int i = 0; i < debug_distribution[v][u]; ++i) {
+            // Flip y-axis index so that the first row is the bottom one.
+            for (int i = 0; i < debug_distribution[V - v - 1][u]; ++i) {
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
                 pos_x[particle_index] = x;

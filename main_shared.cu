@@ -1,9 +1,112 @@
 #include <iostream>
 #include <vector>
 
-#include <cub/block/block_reduce.cuh>
-
 #include "common.cuh"
+
+struct KernelData {
+    std::vector<uint> first_instruction_index_per_block;
+    std::vector<uint> first_cell_index_per_block;
+    std::vector<uint> cell_count_per_block;
+    std::vector<uint> first_particle_index_per_cell;
+    std::vector<uint> particle_count_per_cell;
+};
+
+// TODO: Give this function a beter name.
+// XXX: This implementation will result in blocks sharing cells often, since
+// each block will handle block_size amount of threads each. A better solution
+// would be to only allow sharing cells when particles per cell > block size,
+// that is it is impossible for a block to single-handedly process the cell.
+auto get_kernel_data(std::span<const uint> cell_indices) {
+    auto first_instruction_index_per_block = std::vector<uint>();
+    auto first_cell_index_per_block = std::vector<uint>();
+    auto cell_count_per_block = std::vector<uint>();
+    auto first_particle_index_per_cell = std::vector<uint>{};
+    auto particle_count_per_cell = std::vector<uint>{};
+    // TODO: Find a clever formula for the reserve sizes.
+    first_particle_index_per_cell.reserve(cell_count);
+    particle_count_per_cell.reserve(cell_count);
+    first_cell_index_per_block.reserve(N / block_size);
+    cell_count_per_block.reserve(N / block_size);
+    first_instruction_index_per_block.reserve(N / block_size);
+
+    auto current_cell_index = cell_indices[0];
+    auto block_particle_count = 0;
+
+    auto particle_offset = 0;
+    auto particle_count = 0;
+    auto instruction_offset = 0;
+    auto cell_offset = 0;
+
+    auto occupied_cells_count = 0;
+    auto max_particles_per_cell = 0;
+    auto max_cells_per_block = 0;
+
+    /// Return true if all indices are fully processed.
+    const auto is_all_done = [&](const int i){
+        return i == cell_indices.size();
+    };
+    /// Return true if the block is full.
+    const auto is_block_done = [&](const int i){
+        return is_all_done(i) || block_particle_count == block_size;
+    };
+    /// Return true if the cell is fully processed.
+    const auto is_cell_done = [&](const int i){
+        // Makes sure to do the bounds check before the access.
+        return is_all_done(i) || cell_indices[i] != current_cell_index;
+    };
+
+    auto i = 0;
+    while (i < cell_indices.size()) {
+        // Count particles in cell as long as possible.
+        while (!is_block_done(i) && !is_cell_done(i)) {
+            ++particle_count;
+            ++block_particle_count;
+            ++i;
+        }
+        const auto was_cell_done = is_cell_done(i);
+        const auto was_block_done = is_block_done(i);
+
+        // Count number of processed/semi-processed cells before the cell index
+        // might change.
+        const auto cell_count = current_cell_index - cell_offset + 1;
+        // Add particle data for processed/semi-processed cell.
+        first_particle_index_per_cell.emplace_back(particle_offset);
+        particle_count_per_cell.emplace_back(particle_count);
+        max_particles_per_cell = max(particle_count, max_particles_per_cell);
+        particle_offset += particle_count;
+        particle_count = 0;
+        // Cell fully processed or nothing more to process.
+        if (was_cell_done) {
+            // Mark the next cell for processing.
+            current_cell_index = cell_indices[i];
+            ++occupied_cells_count;
+        }
+        // Block full or nothing more to process.
+        if (was_block_done) {
+            first_cell_index_per_block.emplace_back(cell_offset);
+            cell_count_per_block.emplace_back(cell_count);
+            max_cells_per_block = max(cell_count, max_cells_per_block);
+            first_instruction_index_per_block.emplace_back(instruction_offset);
+            instruction_offset += cell_count;
+            // Only add fully processed cells to the offset. This way the next
+            // block can continue processing the semi-processed cell.
+            const auto fully_processed_count = cell_count - !was_cell_done;
+            cell_offset += fully_processed_count;
+            block_particle_count = 0;
+        }
+    }
+    return KernelData{
+        .first_instruction_index_per_block = std::move(first_instruction_index_per_block),
+        .first_cell_index_per_block = std::move(first_cell_index_per_block),
+        .cell_count_per_block = std::move(cell_count_per_block),
+        .first_particle_index_per_cell = std::move(first_particle_index_per_cell),
+        .particle_count_per_cell = std::move(particle_count_per_cell),
+        // TODO: Add these back when/if relevant.
+        /* .occupied_cells_count = occupied_cells_count,
+        .max_particles_per_cell = max_particles_per_cell,
+        .max_cells_per_block = max_cells_per_block */
+    };
+}
 
 /// https://graphics.stanford.edu/%7Eseander/bithacks.html#RoundUpPowerOf2
 constexpr
@@ -17,6 +120,24 @@ auto next_pow2(uint32_t v) {
     v++;
     v += v == 0;
     return v;
+}
+
+__device__
+auto get_cell_index_rel_block(
+        const uint first_cell_in_block_index, 
+        const uint block_cell_count,
+        const uint *particle_count_per_cell) {
+    auto cell_first_particle_index = 0;
+    for (auto i = 0u; i < block_cell_count; ++i) {
+        const auto cell_index = first_cell_in_block_index + i;
+        const auto cell_particle_count = particle_count_per_cell[cell_index];
+        if (threadIdx.x < cell_first_particle_index + cell_particle_count) {
+            return i;
+        }
+        cell_first_particle_index += cell_particle_count;
+    }
+    // Return an invalid index otherwise.
+    return block_cell_count;
 }
 
 /// Calculate the cell index of each particle.
@@ -36,8 +157,19 @@ void get_cell_index_per_particle(const FloatingPoint *pos_x,
     cell_indices[particle_index] = cell_origin.x + cell_origin.y * U;
 }
 
-__global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
-        FloatingPoint *density) {
+__global__ void add_density_shared(
+        const FloatingPoint *pos_x,
+        const FloatingPoint *pos_y,
+        FloatingPoint *density,
+        const uint *first_cell_index_per_block,
+        const uint *cell_count_per_block,
+        const uint *first_particle_index_per_cell,
+        const uint *particle_count_per_cell
+    ) {
+    const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (particle_index >= N) return;
+
+
     // Each particle will contribute to 4 cells.
     __shared__ FloatingPoint density_shared[4][block_size];
 
@@ -49,38 +181,27 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
     density_shared[3][threadIdx.x] = 0;
     __syncthreads();
 
-    // XXX: Assumes both fixed and equal number of cells per block.
-    const auto cells_per_block = cell_count / gridDim.x;
-    
     // Block-specific variables.
-    const auto first_cell_in_block_index = blockIdx.x * cells_per_block;
-    const auto first_particle_in_block_index = blockIdx.x * blockDim.x;
+    const auto first_cell_in_block_index = first_cell_index_per_block[blockIdx.x];
+    const auto block_cell_count = cell_count_per_block[blockIdx.x];
 
     // Cell-specific variables.
     // XXX: Assumes both fixed and equal number of cells per block.
-    const auto cell_index_rel_block = threadIdx.x / cell_particle_count;
+    const auto cell_index_rel_block = get_cell_index_rel_block(
+        first_cell_in_block_index, block_cell_count, particle_count_per_cell);
+    if (cell_index_rel_block >= block_cell_count) {
+        
+        printf("Error! Block %d: Could not assign cell index to thread %d. Expression: %d >= %d\n",
+            blockIdx.x, threadIdx.x,
+            cell_index_rel_block, block_cell_count);
+        return;
+    }
+    const auto cell_index = first_cell_in_block_index + cell_index_rel_block;
+    const auto first_particle_in_cell_index = first_particle_index_per_cell[cell_index];
+    const auto cell_particle_count = particle_count_per_cell[cell_index];
     
     // Thread-specific variables.
-    const auto particle_index_rel_block = threadIdx.x;
-    const auto particle_index = first_particle_in_block_index + particle_index_rel_block;
-    if (particle_index >= N) return;
-    const auto cell_index = first_cell_in_block_index + cell_index_rel_block;
-    const auto particle_index_rel_cell = particle_index_rel_block % cell_particle_count;
-
-    /* printf(
-        "block: %d, thread: %d | cell_index: %d = %d + %d\n",
-        blockIdx.x, threadIdx.x, cell_index, first_cell_in_block_index, cell_index_rel_block
-    ); */
-    /* printf(
-        "block: %d, thread: %d | first_cell_in_block_index: %d = %d + %d\n",
-        blockIdx.x, threadIdx.x,
-        first_cell_in_block_index, blockIdx.x, cells_per_block
-    ); */
-    /* printf(
-        "block: %d, thread: %d | particle_index: %d, particle_index_rel_cell: %d, particle_index_rel_block: %d\n",
-        blockIdx.x, threadIdx.x,
-        particle_index, particle_index_rel_cell, particle_index_rel_block
-    ); */
+    const auto particle_index_rel_cell = particle_index - first_particle_in_cell_index;
     
     const auto cell_origin = uint2{ cell_index % U, cell_index / U };
     // Node indices.
@@ -114,7 +235,9 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
     // in-place reduction in shared memory
     // XXX: Assumes both fixed and equal number of particles per cell.
     for (int stride = next_pow2(cell_particle_count) / 2; stride > 0; stride /= 2) {
-        if (particle_index_rel_cell < stride) {
+        // Make sure not to stride outside of the cell range. Crucial when
+        // the number of particles in a cell isn't a power of two.
+        if (particle_index_rel_cell < stride && particle_index_rel_cell + stride < cell_particle_count) {
             density_shared[0][threadIdx.x] += density_shared[0][threadIdx.x + stride];
             density_shared[1][threadIdx.x] += density_shared[1][threadIdx.x + stride];
             density_shared[2][threadIdx.x] += density_shared[2][threadIdx.x + stride];
@@ -157,19 +280,34 @@ int main() {
     // Initialize density.
     fill(d_density, 0, h_density.size());
 
-    const auto index_kernel_block_count = (N + block_size - 1) / block_size;
     get_cell_index_per_particle<<<
-        index_kernel_block_count, block_size
+        block_count, block_size
     >>>(
         d_pos_x, d_pos_y, d_cell_indices
     );
-    
-    // XXX: Only valid if N % block_size == 0;
-    const auto density_kernel_block_count = N / block_size;
+    load(h_cell_indices, d_cell_indices);
+    auto kernel_data = get_kernel_data(h_cell_indices);
+
+    // XXX: This is a mess.
+    decltype(kernel_data.first_cell_index_per_block)::value_type *d_first_cell_index_per_block;
+    decltype(kernel_data.cell_count_per_block)::value_type *d_cell_count_per_block;
+    decltype(kernel_data.first_particle_index_per_cell)::value_type *d_first_particle_index_per_cell;
+    decltype(kernel_data.particle_count_per_cell)::value_type *d_particle_count_per_cell;
+    allocate_array(&d_first_cell_index_per_block, kernel_data.first_cell_index_per_block.size());
+    allocate_array(&d_cell_count_per_block, kernel_data.cell_count_per_block.size());
+    allocate_array(&d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell.size());
+    allocate_array(&d_particle_count_per_cell, kernel_data.particle_count_per_cell.size());
+    store(d_first_cell_index_per_block, kernel_data.first_cell_index_per_block);
+    store(d_cell_count_per_block, kernel_data.cell_count_per_block);
+    store(d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell);
+    store(d_particle_count_per_cell, kernel_data.particle_count_per_cell);
+
     add_density_shared<<<
-        density_kernel_block_count, block_size
+        block_count, block_size
     >>>(
-        d_pos_x, d_pos_y, d_density
+        d_pos_x, d_pos_y, d_density,
+        d_first_cell_index_per_block, d_cell_count_per_block,
+        d_first_particle_index_per_cell, d_particle_count_per_cell
     );
     load(h_density, d_density);
 
