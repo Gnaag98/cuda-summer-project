@@ -8,16 +8,18 @@
 /// Calculate the cell index of each particle.
 __global__
 void get_cell_index_per_particle(const FloatingPoint *pos_x,
-        const FloatingPoint *pos_y, size_t *cell_indices) {
+        const FloatingPoint *pos_y, uint *cell_indices) {
     const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (particle_index >= N) {
         return;
     }
     const auto x = pos_x[particle_index];
     const auto y = pos_y[particle_index];
-    const auto cell_x = floor(x_to_u(x));
-    const auto cell_y = floor(y_to_v(y));
-    cell_indices[particle_index] = cell_x + cell_y * U;
+    const auto cell_origin = uint2{
+        static_cast<uint>(floor(x_to_u(x))),
+        static_cast<uint>(floor(y_to_v(y)))
+    };
+    cell_indices[particle_index] = cell_origin.x + cell_origin.y * U;
 }
 
 __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
@@ -75,43 +77,44 @@ __global__ void add_density_shared(const FloatingPoint *pos_x, const FloatingPoi
 
 int main() {
     // Allocate particle positions and densities on the host.
-    auto h_pos_x = std::vector<FloatingPoint>(positions_count);
-    auto h_pos_y = std::vector<FloatingPoint>(positions_count);
-    auto h_cell_indices = std::vector<size_t>(positions_count);
-    auto h_density = std::vector<FloatingPoint>(lattice_count);
+    auto h_pos_x = std::vector<FloatingPoint>(N);
+    auto h_pos_y = std::vector<FloatingPoint>(N);
+    auto h_cell_indices = std::vector<FloatingPoint>(N);
+    auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate particle positions and densities on the device.
     FloatingPoint *d_pos_x;
     FloatingPoint *d_pos_y;
-    size_t *d_cell_indices;
+    uint *d_cell_indices;
     FloatingPoint *d_density;
-    cudaMalloc(&d_pos_x, positions_bytes);
-    cudaMalloc(&d_pos_y, positions_bytes);
-    cudaMalloc(&d_cell_indices, positions_bytes);
-    cudaMalloc(&d_density, lattice_bytes);
+    allocate_array(&d_pos_x, h_pos_x.size());
+    allocate_array(&d_pos_y, h_pos_y.size());
+    allocate_array(&d_cell_indices, h_cell_indices.size());
+    allocate_array(&d_density, h_density.size());
 
     distribute_random(h_pos_x, h_pos_y);
 
     // Copy positions from the host to the device.
-    cudaMemcpy(d_pos_x, h_pos_x.data(), positions_bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
+    store(d_pos_x, h_pos_x);
+    store(d_pos_y, h_pos_y);
 
     // Initialize density.
-    cudaMemset(d_density, 0, lattice_bytes);
+    fill(d_density, 0, h_density.size());
 
-    //get_cell_index_per_particle<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_cell_indices);
+    get_cell_index_per_particle<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_cell_indices);
 
     add_density_shared<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
-    cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
+    load(h_density, d_density);
 
     // Free device memory.
     cudaFree(d_pos_x);
     cudaFree(d_pos_y);
     cudaFree(d_cell_indices);
-    /* cudaFree(d_density); */
+    cudaFree(d_density);
 
     // Store data to files.
     const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
+    store_positions(output_directory / "positions.csv", h_pos_x, h_pos_y);
     store_density(output_directory / "density_shared.csv", h_density);
 }

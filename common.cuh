@@ -6,6 +6,7 @@
 #include <random>
 #include <span>
 #include <type_traits>
+#include <vector>
 
 #include <cooperative_groups.h>
 
@@ -55,34 +56,45 @@ struct Rectangle {
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
 // Number of cells in the grid.
-const auto U = static_cast<int>(128);
-const auto V = static_cast<int>(256);
+//*
+const auto U = static_cast<int>(512);
+const auto V = static_cast<int>(1024);
+//*/
+/*
+const auto U = static_cast<int>(2);
+const auto V = static_cast<int>(2);
+//*/
+const auto cell_count = U * V;
 
 const auto cell = Dimension{
     .width = space.width / U,
     .height = space.height / V
 };
 
-// Lattice node count, where each node is a cell corner.
-const auto node_count = Dimension{ (U + 1), (V + 1) };
+// Density lattice, where each node is a cell corner.
+const auto lattice = Dimension{ (U + 1), (V + 1) };
+const auto node_count = lattice.width * lattice.height;
 
-const auto cell_particle_count = 1024;
+//*
+const auto cell_particle_count = 16;
+//*/
+/*
+const auto cell_particle_count = 16;
+//*/
 
 // Total number of particles.
-const auto N = cell_particle_count * U * V;
+const auto N = cell_count * cell_particle_count;
 
 const auto random_seed = 1u;
 
-// Allocation size for 1D arrays.
-const auto positions_count = N;
-const auto lattice_count = (U + 1) * (V + 1);
-const auto positions_bytes = positions_count * sizeof(FloatingPoint);
-const auto indices_bytes = positions_count * sizeof(size_t);
-const auto lattice_bytes = lattice_count * sizeof(FloatingPoint);
-
+//*
 const auto block_size = 128;
+//*/
+/*
+const auto block_size = 4;
+//*/
 const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
-const auto block_count = U * V * blocks_per_cell;
+const auto block_count = cell_count * blocks_per_cell;
 
 const auto warp_size = 32;
 
@@ -93,16 +105,42 @@ constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T
     return y;
 }
 
-/**
- * Convert world x coordinate to horizontal cell index.
- */
+template<typename T>
+void allocate_array(T **device_pointer, size_t count) {
+    cudaMalloc(device_pointer, count * sizeof(T));
+}
+
+template<typename T>
+void fill(T *destination, const int value, const size_t count) {
+    cudaMemset(destination, value, count * sizeof(T));
+}
+
+template<typename T>
+void store(T *destination, const std::vector<T> &source) {
+    cudaMemcpy(
+        destination,
+        source.data(),
+        source.size() * sizeof(T),
+        cudaMemcpyHostToDevice
+    );
+}
+
+template<typename T>
+void load(std::vector<T> &destination, const T *source) {
+    cudaMemcpy(
+        destination.data(),
+        source,
+        destination.size() * sizeof(T),
+        cudaMemcpyDeviceToHost
+    );
+}
+
+///Convert world x coordinate to horizontal cell index.
 constexpr auto x_to_u(FloatingPoint x) {
     return linear_map<FloatingPoint>(x, space.left(), space.right(), 0, U);
 }
 
-/**
- * Convert world y coordinate to vertical cell index.
- */
+///Convert world y coordinate to vertical cell index.
 constexpr auto y_to_v(FloatingPoint y) {
     return linear_map<FloatingPoint>(y, space.bottom(), space.top(), 0, V);
 }
@@ -111,12 +149,9 @@ constexpr auto get_node_index(const int x, const int y) {
     return x + y * (U + 1);
 }
 
-constexpr auto get_particle_index(const int i, const int u, const int v) {
-    return i + (u + v * U) * cell_particle_count;
-}
-
-void distribute_random(std::span<FloatingPoint> pos_x, std::span<FloatingPoint> pos_y) {
-    // Randomly distribute particles in cells.
+/// Randomly distribute particles in cells.
+void distribute_random(std::span<FloatingPoint> pos_x,
+        std::span<FloatingPoint> pos_y) {
     auto random_engine = std::default_random_engine(random_seed);
     auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
         0.0, cell.width
@@ -125,42 +160,58 @@ void distribute_random(std::span<FloatingPoint> pos_x, std::span<FloatingPoint> 
         0.0, cell.height
     );
 
+    auto particle_index = 0;
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
             for (int i = 0; i <  cell_particle_count; ++i) {
-                const auto particle_index = get_particle_index(i, u, v);
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
                 pos_x[particle_index] = x;
                 pos_y[particle_index] = y;
+                ++particle_index;
             }
         }
     }
 }
 
-void distribute_cell_center(std::span<FloatingPoint> pos_x, std::span<FloatingPoint> pos_y) {
-    // Place all particles in the center of each cell.
+/// Place all particles in the center of each cell.
+void distribute_cell_center(std::span<FloatingPoint> pos_x,
+        std::span<FloatingPoint> pos_y) {
+    auto particle_index = 0;
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
             for (int i = 0; i <  cell_particle_count; ++i) {
-                const auto particle_index = get_particle_index(i, u, v);
                 const auto x = (u + 0.5) * cell.width - space.width / 2;
                 const auto y = (v + 0.5) * cell.height - space.height / 2;
                 pos_x[particle_index] = x;
                 pos_y[particle_index] = y;
+                ++particle_index;
             }
         }
     }
 }
 
+void store_positions(std::filesystem::path filepath,
+        std::span<const FloatingPoint> x, std::span<const FloatingPoint> y) {
+    auto file = std::ofstream(filepath);
+    for (auto i = 0; i < N; ++i) {
+        file << x[i] << ',';
+    }
+    file << ";\n";
+    for (auto i = 0; i < N; ++i) {
+        file << y[i] << ',';
+    }
+    file << ";\n";
+}
+
 void store_density(std::filesystem::path filepath,
-                   std::span<const FloatingPoint> density) {
-    auto density_file = std::ofstream(filepath);
+        std::span<const FloatingPoint> density) {
+    auto file = std::ofstream(filepath);
     for (int row = 0; row < (V + 1); ++row) {
         for (int col = 0; col < (U + 1); ++col) {
-            density_file << density[row * (U + 1) + col] << ',';
+            file << density[row * (U + 1) + col] << ',';
         }
-        density_file << '\n';
+        file << '\n';
     }
 }
 

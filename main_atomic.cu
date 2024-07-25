@@ -6,37 +6,30 @@
 __global__
 void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
         FloatingPoint *density) {
-
-    using namespace cooperative_groups;
-
-    const auto cell_index = blockIdx.x / blocks_per_cell;
-    const auto cell_block_index = blockIdx.x % blocks_per_cell;
-    const auto cell_particle_index = cell_block_index * block_size + threadIdx.x;
-    if (cell_particle_index >= cell_particle_count) {
-        return;
-    }
-    const auto particle_index = cell_index * cell_particle_count + cell_block_index * blockDim.x + threadIdx.x;
-    // XXX: This if statement might be unneccessary due to the above early
-    // return, since the number of particles per cell is constant.
-    if (particle_index >= N) {
-        printf("This shouldn't happen! blockIdx.x: %d, threadIdx.x: %d\n", blockIdx.x, threadIdx.x);
+    const auto index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index >= N) {
         return;
     }
 
-    const auto cell_origin = uint2{ cell_index % U, cell_index / U };
-    // Node indices.
-    const auto index_bottom_left  = get_node_index(cell_origin.x,     cell_origin.y);
-    const auto index_bottom_right = get_node_index(cell_origin.x + 1, cell_origin.y);
-    const auto index_top_left     = get_node_index(cell_origin.x,     cell_origin.y + 1);
-    const auto index_top_right    = get_node_index(cell_origin.x + 1, cell_origin.y + 1);
-
-    const auto x = pos_x[particle_index];
-    const auto y = pos_y[particle_index];
+    const auto x = pos_x[index];
+    const auto y = pos_y[index];
     const auto u = x_to_u(x);
     const auto v = y_to_v(y);
 
+    // Node coordinates.
+    const auto node_bottom_left  = int2{ static_cast<int>(floor(u)), static_cast<int>(floor(v)) };
+    const auto node_bottom_right = int2{ static_cast<int>( ceil(u)), static_cast<int>(floor(v)) };
+    const auto node_top_left     = int2{ static_cast<int>(floor(u)), static_cast<int>( ceil(v)) };
+    const auto node_top_right    = int2{ static_cast<int>( ceil(u)), static_cast<int>( ceil(v)) };
+
+    // Node indices.
+    const auto index_bottom_left = get_node_index(node_bottom_left.x, node_bottom_left.y);
+    const auto index_bottom_right = get_node_index(node_bottom_right.x, node_bottom_right.y);
+    const auto index_top_left = get_node_index(node_top_left.x, node_top_left.y);
+    const auto index_top_right = get_node_index(node_top_right.x, node_top_right.y);
+
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
-    const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
+    const auto pos_relative_cell = FloatingPoint2{ u - node_bottom_left.x, v - node_bottom_left.y };
     const auto weights = FloatingPoint4{
         (1 - pos_relative_cell.x) * (1 - pos_relative_cell.y),
              pos_relative_cell.x  * (1 - pos_relative_cell.y),
@@ -44,47 +37,41 @@ void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
              pos_relative_cell.x  *      pos_relative_cell.y
     };
 
-    // Reduce densities per warp.
-    auto tile = tiled_partition<warp_size>(this_thread_block());
-    const auto densities_tile = tile_reduce<warp_size>(tile, weights);
-    // Only the first thread of the tile holds the fully reduced sum.
-    if (tile.thread_rank() == 0) {
-        atomicAdd(&density[index_bottom_left], densities_tile.x);
-        atomicAdd(&density[index_bottom_right], densities_tile.y);
-        atomicAdd(&density[index_top_left], densities_tile.z);
-        atomicAdd(&density[index_top_right], densities_tile.w);
-    }
+    atomicAdd(&density[index_bottom_left], weights.x);
+    atomicAdd(&density[index_bottom_right], weights.y);
+    atomicAdd(&density[index_top_left], weights.z);
+    atomicAdd(&density[index_top_right], weights.w);
 }
 
 int main() {
     // Allocate particle positions and densities on the host.
-    auto h_pos_x = std::vector<FloatingPoint>(positions_count);
-    auto h_pos_y = std::vector<FloatingPoint>(positions_count);
-    auto h_density = std::vector<FloatingPoint>(lattice_count);
+    auto h_pos_x = std::vector<FloatingPoint>(N);
+    auto h_pos_y = std::vector<FloatingPoint>(N);
+    auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate particle positions and densities on the device.
     FloatingPoint *d_pos_x;
     FloatingPoint *d_pos_y;
     FloatingPoint *d_density;
-    cudaMalloc(&d_pos_x, positions_bytes);
-    cudaMalloc(&d_pos_y, positions_bytes);
-    cudaMalloc(&d_density, lattice_bytes);
+    allocate_array(&d_pos_x, h_pos_x.size());
+    allocate_array(&d_pos_y, h_pos_y.size());
+    allocate_array(&d_density, h_density.size());
 
     distribute_random(h_pos_x, h_pos_y);
-
     // Copy positions from the host to the device.
-    cudaMemcpy(d_pos_x, h_pos_x.data(), positions_bytes, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_pos_y, h_pos_y.data(), positions_bytes, cudaMemcpyHostToDevice);
+    store(d_pos_x, h_pos_x);
+    store(d_pos_y, h_pos_y);
 
     // Initialize density.
-    cudaMemset(d_density, 0, lattice_bytes);
+    fill(d_density, 0, h_density.size());
 
     add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
-    cudaMemcpy(h_density.data(), d_density, lattice_bytes, cudaMemcpyDeviceToHost);
+    load(h_density, d_density);
 
     // Free device memory.
     cudaFree(d_pos_x);
     cudaFree(d_pos_y);
+    cudaFree(d_density);
 
     // Store data to files.
     const auto output_directory = std::filesystem::path("output");

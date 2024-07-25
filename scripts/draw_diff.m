@@ -1,5 +1,5 @@
 clear
-clc
+%clc
 
 tolerance = 0.1;
 
