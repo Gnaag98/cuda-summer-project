@@ -10,6 +10,9 @@
 
 #include <cooperative_groups.h>
 
+#define DEBUG_DISTRIBUTION
+#define DEBUG_AVOID_EDGES
+
 // Select float or double for all floating point types.
 using FloatingPoint = float;
 
@@ -55,15 +58,25 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
+const auto cell_particle_count = 2;
+#ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
-//*
 const auto U = static_cast<int>(512);
 const auto V = static_cast<int>(1024);
-//*/
-/*
+
+#else
 const auto U = static_cast<int>(2);
 const auto V = static_cast<int>(2);
-//*/
+const int debug_distribution[V][U] = {
+    { cell_particle_count, cell_particle_count },
+    { cell_particle_count, cell_particle_count }
+};
+#endif
+const auto block_size = 128;
+
+/// TODO: Remove this when it stops being used by the shared version.
+const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
+
 const auto cell_count = U * V;
 
 const auto cell = Dimension{
@@ -74,27 +87,22 @@ const auto cell = Dimension{
 // Density lattice, where each node is a cell corner.
 const auto lattice = Dimension{ (U + 1), (V + 1) };
 const auto node_count = lattice.width * lattice.height;
-
-//*
-const auto cell_particle_count = 16;
-//*/
-/*
-const auto cell_particle_count = 16;
-//*/
-
 // Total number of particles.
+#ifndef DEBUG_DISTRIBUTION
 const auto N = cell_count * cell_particle_count;
+#else
+const auto N = ([]{
+    auto n = 0;
+    for (int v = 0; v < V; ++v) {
+        for (int u = 0; u < U; ++u) {
+            n += debug_distribution[v][u];
+        }
+    }
+    return n;
+})();
+#endif
 
 const auto random_seed = 1u;
-
-//*
-const auto block_size = 128;
-//*/
-/*
-const auto block_size = 4;
-//*/
-const auto blocks_per_cell = (cell_particle_count + block_size - 1) / block_size;
-const auto block_count = cell_count * blocks_per_cell;
 
 const auto warp_size = 32;
 
@@ -153,17 +161,28 @@ constexpr auto get_node_index(const int x, const int y) {
 void distribute_random(std::span<FloatingPoint> pos_x,
         std::span<FloatingPoint> pos_y) {
     auto random_engine = std::default_random_engine(random_seed);
+#ifdef DEBUG_AVOID_EDGES
+    // Make sure no particle is near a cell edge. Will remove edge cases.
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.width, 0.75 * cell.width
+    );
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.height, 0.75 * cell.height
+    );
+#else
     auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
         0.0, cell.width
     );
     auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
         0.0, cell.height
     );
+#endif
 
     auto particle_index = 0;
+#ifdef DEBUG_DISTRIBUTION
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
-            for (int i = 0; i <  cell_particle_count; ++i) {
+            for (int i = 0; i < debug_distribution[v][u]; ++i) {
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
                 pos_x[particle_index] = x;
@@ -172,6 +191,19 @@ void distribute_random(std::span<FloatingPoint> pos_x,
             }
         }
     }
+#else
+    for (int v = 0; v < V; ++v) {
+        for (int u = 0; u < U; ++u) {
+            for (int i = 0; i < cell_particle_count; ++i) {
+                const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
+                const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
+                pos_x[particle_index] = x;
+                pos_y[particle_index] = y;
+                ++particle_index;
+            }
+        }
+    }
+#endif
 }
 
 /// Place all particles in the center of each cell.

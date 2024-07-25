@@ -101,9 +101,19 @@ int main() {
     // Initialize density.
     fill(d_density, 0, h_density.size());
 
-    get_cell_index_per_particle<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_cell_indices);
-
-    add_density_shared<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
+    const auto index_kernel_block_count = (N + block_size - 1) / block_size;
+    get_cell_index_per_particle<<<
+        index_kernel_block_count, block_size
+    >>>(
+        d_pos_x, d_pos_y, d_cell_indices
+    );
+    
+    const auto density_kernel_block_count = cell_count * blocks_per_cell;
+    add_density_shared<<<
+        density_kernel_block_count, block_size
+    >>>(
+        d_pos_x, d_pos_y, d_density
+    );
     load(h_density, d_density);
 
     // Free device memory.

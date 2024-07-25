@@ -65,6 +65,7 @@ int main() {
     // Initialize density.
     fill(d_density, 0, h_density.size());
 
+    const auto block_count = (N + block_size - 1) / block_size;
     add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
     load(h_density, d_density);
 
