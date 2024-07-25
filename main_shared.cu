@@ -25,9 +25,9 @@ auto get_kernel_data(std::span<const uint> cell_indices) {
     // TODO: Find a clever formula for the reserve sizes.
     first_particle_index_per_cell.reserve(cell_count);
     particle_count_per_cell.reserve(cell_count);
-    first_cell_index_per_block.reserve(N / block_size);
-    cell_count_per_block.reserve(N / block_size);
-    first_instruction_index_per_block.reserve(N / block_size);
+    first_cell_index_per_block.reserve(cell_indices.size() / block_size);
+    cell_count_per_block.reserve(cell_indices.size() / block_size);
+    first_instruction_index_per_block.reserve(cell_indices.size() / block_size);
 
     auto current_cell_index = cell_indices[0];
     auto block_particle_count = 0;
@@ -143,9 +143,10 @@ auto get_cell_index_rel_block(
 /// Calculate the cell index of each particle.
 __global__
 void get_cell_index_per_particle(const FloatingPoint *pos_x,
-        const FloatingPoint *pos_y, uint *cell_indices) {
+        const FloatingPoint *pos_y, const uint particle_count,
+        uint *cell_indices) {
     const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (particle_index >= N) {
+    if (particle_index >= particle_count) {
         return;
     }
     const auto x = pos_x[particle_index];
@@ -160,6 +161,7 @@ void get_cell_index_per_particle(const FloatingPoint *pos_x,
 __global__ void add_density_shared(
         const FloatingPoint *pos_x,
         const FloatingPoint *pos_y,
+        const uint particle_count,
         FloatingPoint *density,
         const uint *first_instruction_index_per_block,
         const uint *first_cell_index_per_block,
@@ -168,7 +170,7 @@ __global__ void add_density_shared(
         const uint *particle_count_per_cell
     ) {
     const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (particle_index >= N) return;
+    if (particle_index >= particle_count) return;
 
 
     // Each particle will contribute to 4 cells.
@@ -257,6 +259,11 @@ __global__ void add_density_shared(
 }
 
 int main() {
+#ifndef DEBUG_DISTRIBUTION
+    // Generate a particle density.
+    auto particle_count_per_cell = std::vector<uint>(cell_count);
+    const auto N = generate_particle_density(particle_count_per_cell);
+#endif
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
     auto h_pos_y = std::vector<FloatingPoint>(N);
@@ -273,7 +280,7 @@ int main() {
     allocate_array(&d_cell_indices, h_cell_indices.size());
     allocate_array(&d_density, h_density.size());
 
-    distribute_random(h_pos_x, h_pos_y);
+    distribute_from_density(h_pos_x, h_pos_y, particle_count_per_cell);
 
     // Copy positions from the host to the device.
     store(d_pos_x, h_pos_x);
@@ -282,10 +289,12 @@ int main() {
     // Initialize density.
     fill(d_density, 0, h_density.size());
 
+    const auto block_count = (N + block_size - 1) / block_size;
+    printf("N: %d, block_count: %d, block_size: %d\n", N, block_count, block_size);
     get_cell_index_per_particle<<<
         block_count, block_size
     >>>(
-        d_pos_x, d_pos_y, d_cell_indices
+        d_pos_x, d_pos_y, N, d_cell_indices
     );
     load(h_cell_indices, d_cell_indices);
     auto kernel_data = get_kernel_data(h_cell_indices);
@@ -342,7 +351,7 @@ int main() {
     add_density_shared<<<
         block_count, block_size
     >>>(
-        d_pos_x, d_pos_y, d_density,
+        d_pos_x, d_pos_y, N, d_density,
         d_first_instruction_index_per_block,
         d_first_cell_index_per_block, d_cell_count_per_block,
         d_first_particle_index_per_cell, d_particle_count_per_cell

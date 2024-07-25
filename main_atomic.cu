@@ -5,9 +5,9 @@
 
 __global__
 void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
-        FloatingPoint *density) {
+        const uint particle_count, FloatingPoint *density) {
     const auto index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (index >= N) {
+    if (index >= particle_count) {
         return;
     }
 
@@ -44,6 +44,11 @@ void add_density_atomic(const FloatingPoint *pos_x, const FloatingPoint *pos_y,
 }
 
 int main() {
+#ifndef DEBUG_DISTRIBUTION
+    // Generate a particle density.
+    auto particle_count_per_cell = std::vector<uint>(cell_count);
+    const auto N = generate_particle_density(particle_count_per_cell);
+#endif
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
     auto h_pos_y = std::vector<FloatingPoint>(N);
@@ -57,7 +62,8 @@ int main() {
     allocate_array(&d_pos_y, h_pos_y.size());
     allocate_array(&d_density, h_density.size());
 
-    distribute_random(h_pos_x, h_pos_y);
+    distribute_from_density(h_pos_x, h_pos_y, particle_count_per_cell);
+
     // Copy positions from the host to the device.
     store(d_pos_x, h_pos_x);
     store(d_pos_y, h_pos_y);
@@ -65,7 +71,9 @@ int main() {
     // Initialize density.
     fill(d_density, 0, h_density.size());
 
-    add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, d_density);
+    const auto block_count = (N + block_size - 1) / block_size;
+    printf("N: %d, block_count: %d, block_size: %d\n", N, block_count, block_size);
+    add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, N, d_density);
     load(h_density, d_density);
 
     // Free device memory.

@@ -58,19 +58,15 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
-const auto cell_particle_count = 16;
+const auto mean_cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
 const auto U = static_cast<int>(512);
 const auto V = static_cast<int>(1024);
-
 #else
 const auto U = static_cast<int>(2);
 const auto V = static_cast<int>(2);
-const int debug_distribution[V][U] = {
-    { 2, 1 },
-    { 3, 2 }
-};
+const uint particle_count_per_cell[] = { 3, 0, 2, 1 };
 #endif
 const auto block_size = 4;
 
@@ -85,21 +81,19 @@ const auto cell = Dimension{
 const auto lattice = Dimension{ (U + 1), (V + 1) };
 const auto node_count = lattice.width * lattice.height;
 // Total number of particles.
-#ifndef DEBUG_DISTRIBUTION
-const auto N = cell_count * cell_particle_count;
-#else
+#ifdef DEBUG_DISTRIBUTION
 const auto N = ([]{
     auto n = 0;
+    auto i = 0;
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
-            n += debug_distribution[v][u];
+            n += particle_count_per_cell[i];
+            ++i;
         }
     }
     return n;
 })();
 #endif
-
-const auto block_count = (N + block_size - 1) / block_size;
 
 const auto random_seed = 1u;
 
@@ -156,6 +150,60 @@ constexpr auto get_node_index(const uint x, const uint y) {
     return x + y * (U + 1);
 }
 
+/// Generate a density distribution and return the total particle count.
+auto generate_particle_density(std::span<uint> particle_count_per_cell) {
+    auto random_engine = std::default_random_engine(random_seed);
+    auto distribution = std::uniform_int_distribution<int>(
+        0.75 * mean_cell_particle_count, 1.25 * mean_cell_particle_count
+    );
+    auto N = 0u;
+    for (auto i = 0; i < particle_count_per_cell.size(); ++i) {
+        const auto cell_particle_count = distribution(random_engine);
+        particle_count_per_cell[i] = cell_particle_count;
+        N += cell_particle_count;
+    }
+    return N;
+}
+
+/// Randomly distribute particles according with a given density distribution.
+void distribute_from_density(
+        std::span<FloatingPoint> pos_x,
+        std::span<FloatingPoint> pos_y,
+        std::span<const uint> particle_count_per_cell) {
+    auto random_engine = std::default_random_engine(random_seed);
+#ifdef DEBUG_AVOID_EDGES
+    // Make sure no particle is near a cell edge. Will remove edge cases.
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.width, 0.75 * cell.width
+    );
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.height, 0.75 * cell.height
+    );
+#else
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.width
+    );
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.height
+    );
+#endif
+    auto cell_index = 0;
+    auto particle_index = 0;
+    for (int v = 0; v < V; ++v) {
+        for (int u = 0; u < U; ++u) {
+            const auto cell_particle_count = particle_count_per_cell[cell_index];
+            for (int i = 0u; i < cell_particle_count; ++i) {
+                const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
+                const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
+                pos_x[particle_index] = x;
+                pos_y[particle_index] = y;
+                ++particle_index;
+            }
+            ++cell_index;
+        }
+    }
+}
+
 /// Randomly distribute particles in cells.
 void distribute_random(std::span<FloatingPoint> pos_x,
         std::span<FloatingPoint> pos_y) {
@@ -178,11 +226,9 @@ void distribute_random(std::span<FloatingPoint> pos_x,
 #endif
 
     auto particle_index = 0;
-#ifdef DEBUG_DISTRIBUTION
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
-            // Flip y-axis index so that the first row is the bottom one.
-            for (int i = 0; i < debug_distribution[V - v - 1][u]; ++i) {
+            for (int i = 0; i < mean_cell_particle_count; ++i) {
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
                 pos_x[particle_index] = x;
@@ -191,19 +237,6 @@ void distribute_random(std::span<FloatingPoint> pos_x,
             }
         }
     }
-#else
-    for (int v = 0; v < V; ++v) {
-        for (int u = 0; u < U; ++u) {
-            for (int i = 0; i < cell_particle_count; ++i) {
-                const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
-                const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
-                pos_x[particle_index] = x;
-                pos_y[particle_index] = y;
-                ++particle_index;
-            }
-        }
-    }
-#endif
 }
 
 /// Place all particles in the center of each cell.
@@ -212,7 +245,7 @@ void distribute_cell_center(std::span<FloatingPoint> pos_x,
     auto particle_index = 0;
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
-            for (int i = 0; i <  cell_particle_count; ++i) {
+            for (int i = 0; i <  mean_cell_particle_count; ++i) {
                 const auto x = (u + 0.5) * cell.width - space.width / 2;
                 const auto y = (v + 0.5) * cell.height - space.height / 2;
                 pos_x[particle_index] = x;
@@ -226,11 +259,11 @@ void distribute_cell_center(std::span<FloatingPoint> pos_x,
 void store_positions(std::filesystem::path filepath,
         std::span<const FloatingPoint> x, std::span<const FloatingPoint> y) {
     auto file = std::ofstream(filepath);
-    for (auto i = 0; i < N; ++i) {
+    for (auto i = 0; i < x.size(); ++i) {
         file << x[i] << ',';
     }
     file << ";\n";
-    for (auto i = 0; i < N; ++i) {
+    for (auto i = 0; i < y.size(); ++i) {
         file << y[i] << ',';
     }
     file << ";\n";
