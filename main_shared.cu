@@ -135,14 +135,14 @@ int main() {
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
     auto h_pos_y = std::vector<FloatingPoint>(N);
-    auto h_cell_indices = std::vector<FloatingPoint>(N);
+    auto h_cell_indices = std::vector<uint>(N);
     auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate particle positions and densities on the device.
-    FloatingPoint *d_pos_x;
-    FloatingPoint *d_pos_y;
-    uint *d_cell_indices;
-    FloatingPoint *d_density;
+    decltype(h_pos_x)::value_type *d_pos_x;
+    decltype(h_pos_y)::value_type *d_pos_y;
+    decltype(h_cell_indices)::value_type *d_cell_indices;
+    decltype(h_density)::value_type *d_density;
     allocate_array(&d_pos_x, h_pos_x.size());
     allocate_array(&d_pos_y, h_pos_y.size());
     allocate_array(&d_cell_indices, h_cell_indices.size());
