@@ -152,9 +152,16 @@ constexpr auto get_node_index(const uint x, const uint y) {
     return x + y * (U + 1);
 }
 
-auto get_shuffled_indices(const uint indices_count) {
+/// Return all indices in the range [0, indices_count - 1) in order.
+auto get_ordered_indices(const uint indices_count) {
     auto indices = std::vector<uint>(indices_count);
     std::iota(indices.begin(), indices.end(), 0u);
+    return indices;
+}
+
+/// Return all indices in the range [0, indices_count - 1) in random order.
+auto get_shuffled_indices(const uint indices_count) {
+    auto indices = get_ordered_indices(indices_count);
     auto random_engine = std::default_random_engine(random_seed);
     std::shuffle(indices.begin(), indices.end(), random_engine);
     return indices;

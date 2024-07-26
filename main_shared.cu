@@ -154,15 +154,15 @@ __global__ void add_density_shared(
         const FloatingPoint *pos_y,
         const uint particle_count,
         FloatingPoint *density,
+        const uint *particle_indices,
         const uint *first_instruction_index_per_block,
         const uint *cell_count_per_block,
         const uint *cell_index_per_instruction,
         const uint *first_particle_index_per_cell,
         const uint *particle_count_per_cell
     ) {
-    const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
-    if (particle_index >= particle_count) return;
-
+    const auto indirect_particle_index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (indirect_particle_index >= particle_count) return;
 
     // Each particle will contribute to 4 cells.
     __shared__ FloatingPoint density_shared[4][block_size];
@@ -185,8 +185,8 @@ __global__ void add_density_shared(
         first_instruction_in_block_index, block_cell_count,
         particle_count_per_cell);
     if (cell_index_rel_block >= block_cell_count) {
-        printf("Error! Block %d, thread: %d, particle %d: Could not assign cell index to thread.\n",
-            blockIdx.x, threadIdx.x, particle_index);
+        printf("Error! Block %d, thread: %d, indirect particle index: %d: Could not assign cell index to thread.\n",
+            blockIdx.x, threadIdx.x, indirect_particle_index);
         return;
     }
     const auto instruction_index = first_instruction_in_block_index + cell_index_rel_block;
@@ -195,7 +195,8 @@ __global__ void add_density_shared(
     const auto cell_particle_count = particle_count_per_cell[instruction_index];
     
     // Thread-specific variables.
-    const auto particle_index_rel_cell = particle_index - first_particle_in_cell_index;
+    const auto particle_index_rel_cell = indirect_particle_index - first_particle_in_cell_index;
+    const auto particle_index = particle_indices[indirect_particle_index];
     
     const auto cell_origin = uint2{ cell_index % U, cell_index / U };
     // Node indices.
@@ -257,8 +258,9 @@ int main() {
     // Allocate on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
     auto h_pos_y = std::vector<FloatingPoint>(N);
-    const auto h_particle_indices_before = get_shuffled_indices(N);
+    const auto h_particle_indices_before = get_ordered_indices(N);
     auto h_cell_indices_before = std::vector<uint>(N);
+    auto h_cell_indices_after = std::vector<uint>(N);
     auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate on the device.
@@ -277,7 +279,10 @@ int main() {
     allocate_array(&d_cell_indices_after, h_cell_indices_before.size());
     allocate_array(&d_density, h_density.size());
 
-    distribute_from_density(h_pos_x, h_pos_y, h_particle_indices_before,
+    // Distribute the cells using shuffled indices to force uncoalesced global
+    // access when reading particle postions.
+    const auto distribution_indices = get_shuffled_indices(h_pos_x.size());
+    distribute_from_density(h_pos_x, h_pos_y, distribution_indices,
         particle_count_per_cell);
 
     // Copy from the host to the device.
@@ -318,9 +323,8 @@ int main() {
         N
     );
 
-
-    load(h_cell_indices_before, d_cell_indices_before);
-    auto kernel_data = get_kernel_data(h_cell_indices_before);
+    load(h_cell_indices_after, d_cell_indices_after);
+    auto kernel_data = get_kernel_data(h_cell_indices_after);
 
     // XXX: This is a mess.first_instruction_index_per_block
     decltype(kernel_data.first_instruction_index_per_block)::value_type *d_first_instruction_index_per_block;
@@ -345,12 +349,12 @@ int main() {
     store(d_particle_count_per_cell, kernel_data.particle_count_per_cell);
 
     printf("Cell count: %d, instruction count: %lu\n",
-        cell_count, kernel_data.first_instruction_index_per_block.size());
+        cell_count, kernel_data.cell_index_per_instruction.size());
 
     add_density_shared<<<
         block_count, block_size
     >>>(
-        d_pos_x, d_pos_y, N, d_density,
+        d_pos_x, d_pos_y, N, d_density, d_particle_indices_after,
         d_first_instruction_index_per_block, d_cell_count_per_block,
         d_cell_index_per_instruction, d_first_particle_index_per_cell, d_particle_count_per_cell
     );
