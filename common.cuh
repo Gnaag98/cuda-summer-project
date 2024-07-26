@@ -10,7 +10,7 @@
 
 #include <cooperative_groups.h>
 
-#define DEBUG_DISTRIBUTION
+//#define DEBUG_DISTRIBUTION
 #define DEBUG_AVOID_EDGES
 
 // Select float or double for all floating point types.
@@ -68,7 +68,7 @@ const auto U = static_cast<int>(2);
 const auto V = static_cast<int>(2);
 const uint particle_count_per_cell[] = { 3, 0, 2, 1 };
 #endif
-const auto block_size = 4;
+const auto block_size = 128;
 
 const auto cell_count = U * V;
 
@@ -154,7 +154,7 @@ constexpr auto get_node_index(const uint x, const uint y) {
 auto generate_particle_density(std::span<uint> particle_count_per_cell) {
     auto random_engine = std::default_random_engine(random_seed);
     auto distribution = std::uniform_int_distribution<int>(
-        0.75 * mean_cell_particle_count, 1.25 * mean_cell_particle_count
+        0.00 * mean_cell_particle_count, 2.00 * mean_cell_particle_count
     );
     auto N = 0u;
     for (auto i = 0; i < particle_count_per_cell.size(); ++i) {

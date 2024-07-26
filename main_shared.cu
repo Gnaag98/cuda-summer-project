@@ -5,8 +5,9 @@
 
 struct KernelData {
     std::vector<uint> first_instruction_index_per_block;
-    std::vector<uint> first_cell_index_per_block;
     std::vector<uint> cell_count_per_block;
+
+    std::vector<uint> cell_index_per_instruction;
     std::vector<uint> first_particle_index_per_cell;
     std::vector<uint> particle_count_per_cell;
 };
@@ -17,17 +18,17 @@ struct KernelData {
 // would be to only allow sharing cells when particles per cell > block size,
 // that is it is impossible for a block to single-handedly process the cell.
 auto get_kernel_data(std::span<const uint> cell_indices) {
-    auto first_instruction_index_per_block = std::vector<uint>();
-    auto first_cell_index_per_block = std::vector<uint>();
-    auto cell_count_per_block = std::vector<uint>();
-    auto first_particle_index_per_cell = std::vector<uint>{};
-    auto particle_count_per_cell = std::vector<uint>{};
+    if (cell_indices.size() == 0) {
+        throw std::runtime_error("cell_indices empty.");
+    }
+    auto kernel_data = KernelData{};
     // TODO: Find a clever formula for the reserve sizes.
-    first_particle_index_per_cell.reserve(cell_count);
-    particle_count_per_cell.reserve(cell_count);
-    first_cell_index_per_block.reserve(cell_indices.size() / block_size);
-    cell_count_per_block.reserve(cell_indices.size() / block_size);
-    first_instruction_index_per_block.reserve(cell_indices.size() / block_size);
+    kernel_data.first_particle_index_per_cell.reserve(cell_count);
+    kernel_data.particle_count_per_cell.reserve(cell_count);
+
+    kernel_data.cell_index_per_instruction.reserve(cell_indices.size() / block_size);
+    kernel_data.cell_count_per_block.reserve(cell_indices.size() / block_size);
+    kernel_data.first_instruction_index_per_block.reserve(cell_indices.size() / block_size);
 
     auto current_cell_index = cell_indices[0];
     auto block_particle_count = 0;
@@ -36,10 +37,8 @@ auto get_kernel_data(std::span<const uint> cell_indices) {
     auto particle_count = 0;
     auto instruction_offset = 0;
     auto cell_offset = 0;
+    auto cell_count = 0;
 
-    auto occupied_cells_count = 0;
-    auto max_particles_per_cell = 0;
-    auto max_cells_per_block = 0;
 
     /// Return true if all indices are fully processed.
     const auto is_all_done = [&](const int i){
@@ -65,47 +64,37 @@ auto get_kernel_data(std::span<const uint> cell_indices) {
         }
         const auto was_cell_done = is_cell_done(i);
         const auto was_block_done = is_block_done(i);
-
-        // Count number of processed/semi-processed cells before the cell index
-        // might change.
-        const auto cell_count = current_cell_index - cell_offset + 1;
+        // Don't start the block on this cell index if nothing was found.
+        if (block_particle_count == 0) {
+            ++cell_offset;
+        }
         // Add particle data for processed/semi-processed cell.
-        first_particle_index_per_cell.emplace_back(particle_offset);
-        particle_count_per_cell.emplace_back(particle_count);
-        max_particles_per_cell = max(particle_count, max_particles_per_cell);
-        particle_offset += particle_count;
-        particle_count = 0;
+        if (particle_count > 0) {
+            ++cell_count;
+            kernel_data.cell_index_per_instruction.emplace_back(current_cell_index);
+            kernel_data.first_particle_index_per_cell.emplace_back(particle_offset);
+            kernel_data.particle_count_per_cell.emplace_back(particle_count);
+            particle_offset += particle_count;
+            particle_count = 0;
+        }
+        // Block full or nothing more to process.
+        if (was_block_done) {
+            kernel_data.cell_count_per_block.emplace_back(cell_count);
+            kernel_data.first_instruction_index_per_block.emplace_back(instruction_offset);
+            instruction_offset += cell_count;
+            // Only add fully processed cells to the offset. This way the next
+            // block can continue processing the semi-processed cell.
+            cell_offset = current_cell_index;
+            block_particle_count = 0;
+            cell_count = 0;
+        }
         // Cell fully processed or nothing more to process.
         if (was_cell_done) {
             // Mark the next cell for processing.
             current_cell_index = cell_indices[i];
-            ++occupied_cells_count;
-        }
-        // Block full or nothing more to process.
-        if (was_block_done) {
-            first_cell_index_per_block.emplace_back(cell_offset);
-            cell_count_per_block.emplace_back(cell_count);
-            max_cells_per_block = max(cell_count, max_cells_per_block);
-            first_instruction_index_per_block.emplace_back(instruction_offset);
-            instruction_offset += cell_count;
-            // Only add fully processed cells to the offset. This way the next
-            // block can continue processing the semi-processed cell.
-            const auto fully_processed_count = cell_count - !was_cell_done;
-            cell_offset += fully_processed_count;
-            block_particle_count = 0;
         }
     }
-    return KernelData{
-        .first_instruction_index_per_block = std::move(first_instruction_index_per_block),
-        .first_cell_index_per_block = std::move(first_cell_index_per_block),
-        .cell_count_per_block = std::move(cell_count_per_block),
-        .first_particle_index_per_cell = std::move(first_particle_index_per_cell),
-        .particle_count_per_cell = std::move(particle_count_per_cell),
-        // TODO: Add these back when/if relevant.
-        /* .occupied_cells_count = occupied_cells_count,
-        .max_particles_per_cell = max_particles_per_cell,
-        .max_cells_per_block = max_cells_per_block */
-    };
+    return kernel_data;
 }
 
 /// https://graphics.stanford.edu/%7Eseander/bithacks.html#RoundUpPowerOf2
@@ -164,8 +153,8 @@ __global__ void add_density_shared(
         const uint particle_count,
         FloatingPoint *density,
         const uint *first_instruction_index_per_block,
-        const uint *first_cell_index_per_block,
         const uint *cell_count_per_block,
+        const uint *cell_index_per_instruction,
         const uint *first_particle_index_per_cell,
         const uint *particle_count_per_cell
     ) {
@@ -186,7 +175,6 @@ __global__ void add_density_shared(
 
     // Block-specific variables.
     const auto first_instruction_in_block_index = first_instruction_index_per_block[blockIdx.x];
-    const auto first_cell_in_block_index = first_cell_index_per_block[blockIdx.x];
     const auto block_cell_count = cell_count_per_block[blockIdx.x];
 
     // Cell-specific variables.
@@ -195,12 +183,12 @@ __global__ void add_density_shared(
         first_instruction_in_block_index, block_cell_count,
         particle_count_per_cell);
     if (cell_index_rel_block >= block_cell_count) {
-        printf("Error! Block %d: Could not assign cell index to thread %d.\n",
-            blockIdx.x, threadIdx.x);
+        printf("Error! Block %d, thread: %d, particle %d: Could not assign cell index to thread.\n",
+            blockIdx.x, threadIdx.x, particle_index);
         return;
     }
     const auto instruction_index = first_instruction_in_block_index + cell_index_rel_block;
-    const auto cell_index = first_cell_in_block_index + cell_index_rel_block;
+    const auto cell_index = cell_index_per_instruction[instruction_index];
     const auto first_particle_in_cell_index = first_particle_index_per_cell[instruction_index];
     const auto cell_particle_count = particle_count_per_cell[instruction_index];
     
@@ -299,52 +287,25 @@ int main() {
     load(h_cell_indices, d_cell_indices);
     auto kernel_data = get_kernel_data(h_cell_indices);
 
-    /* std::cout << "first_instruction_index_per_block: ";
-    for (const auto v : kernel_data.first_instruction_index_per_block) {
-        std::cout << v << ", ";
-    }
-    std::cout << '\n';
-    std::cout << "first_cell_index_per_block: ";
-    for (const auto v : kernel_data.first_cell_index_per_block) {
-        std::cout << v << ", ";
-    }
-    std::cout << '\n';
-    std::cout << "cell_count_per_block: ";
-    for (const auto v : kernel_data.cell_count_per_block) {
-        std::cout << v << ", ";
-    }
-    std::cout << '\n';
-    std::cout << "first_particle_index_per_cell: ";
-    for (const auto v : kernel_data.first_particle_index_per_cell) {
-        std::cout << v << ", ";
-    }
-    std::cout << '\n';
-    std::cout << "particle_count_per_cell: ";
-    for (const auto v : kernel_data.particle_count_per_cell) {
-        std::cout << v << ", ";
-    }
-    std::cout << '\n';
-
-    std::cout << kernel_data.first_instruction_index_per_block.size() << '\n';
-    std::cout << kernel_data.first_cell_index_per_block.size() << '\n';
-    std::cout << kernel_data.cell_count_per_block.size() << '\n';
-    std::cout << kernel_data.first_particle_index_per_cell.size() << '\n';
-    std::cout << kernel_data.particle_count_per_cell.size() << '\n'; */
-
     // XXX: This is a mess.first_instruction_index_per_block
     decltype(kernel_data.first_instruction_index_per_block)::value_type *d_first_instruction_index_per_block;
-    decltype(kernel_data.first_cell_index_per_block)::value_type *d_first_cell_index_per_block;
     decltype(kernel_data.cell_count_per_block)::value_type *d_cell_count_per_block;
+
+    decltype(kernel_data.cell_index_per_instruction)::value_type *d_cell_index_per_instruction;
     decltype(kernel_data.first_particle_index_per_cell)::value_type *d_first_particle_index_per_cell;
     decltype(kernel_data.particle_count_per_cell)::value_type *d_particle_count_per_cell;
+
     allocate_array(&d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block.size());
-    allocate_array(&d_first_cell_index_per_block, kernel_data.first_cell_index_per_block.size());
     allocate_array(&d_cell_count_per_block, kernel_data.cell_count_per_block.size());
+    
+    allocate_array(&d_cell_index_per_instruction, kernel_data.cell_index_per_instruction.size());
     allocate_array(&d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell.size());
     allocate_array(&d_particle_count_per_cell, kernel_data.particle_count_per_cell.size());
+
     store(d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block);
-    store(d_first_cell_index_per_block, kernel_data.first_cell_index_per_block);
     store(d_cell_count_per_block, kernel_data.cell_count_per_block);
+    
+    store(d_cell_index_per_instruction, kernel_data.cell_index_per_instruction);
     store(d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell);
     store(d_particle_count_per_cell, kernel_data.particle_count_per_cell);
 
@@ -352,9 +313,8 @@ int main() {
         block_count, block_size
     >>>(
         d_pos_x, d_pos_y, N, d_density,
-        d_first_instruction_index_per_block,
-        d_first_cell_index_per_block, d_cell_count_per_block,
-        d_first_particle_index_per_cell, d_particle_count_per_cell
+        d_first_instruction_index_per_block, d_cell_count_per_block,
+        d_cell_index_per_instruction, d_first_particle_index_per_cell, d_particle_count_per_cell
     );
     load(h_density, d_density);
 
