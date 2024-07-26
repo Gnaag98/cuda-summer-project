@@ -1,8 +1,10 @@
 #ifndef COMMON_HPP
 #define COMMON_HPP
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <numeric>
 #include <random>
 #include <span>
 #include <type_traits>
@@ -11,7 +13,7 @@
 #include <cooperative_groups.h>
 
 //#define DEBUG_DISTRIBUTION
-#define DEBUG_AVOID_EDGES
+//#define DEBUG_AVOID_EDGES
 
 // Select float or double for all floating point types.
 using FloatingPoint = float;
@@ -150,6 +152,14 @@ constexpr auto get_node_index(const uint x, const uint y) {
     return x + y * (U + 1);
 }
 
+auto get_shuffled_indices(const uint indices_count) {
+    auto indices = std::vector<uint>(indices_count);
+    std::iota(indices.begin(), indices.end(), 0u);
+    auto random_engine = std::default_random_engine(random_seed);
+    std::shuffle(indices.begin(), indices.end(), random_engine);
+    return indices;
+}
+
 /// Generate a density distribution and return the total particle count.
 auto generate_particle_density(std::span<uint> particle_count_per_cell) {
     auto random_engine = std::default_random_engine(random_seed);
@@ -169,6 +179,7 @@ auto generate_particle_density(std::span<uint> particle_count_per_cell) {
 void distribute_from_density(
         std::span<FloatingPoint> pos_x,
         std::span<FloatingPoint> pos_y,
+        std::span<const uint> particle_indices,
         std::span<const uint> particle_count_per_cell) {
     auto random_engine = std::default_random_engine(random_seed);
 #ifdef DEBUG_AVOID_EDGES
@@ -188,16 +199,17 @@ void distribute_from_density(
     );
 #endif
     auto cell_index = 0;
-    auto particle_index = 0;
+    auto indirect_particle_index = 0;
     for (int v = 0; v < V; ++v) {
         for (int u = 0; u < U; ++u) {
             const auto cell_particle_count = particle_count_per_cell[cell_index];
             for (int i = 0u; i < cell_particle_count; ++i) {
                 const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
                 const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
+                const auto particle_index = particle_indices[indirect_particle_index];
                 pos_x[particle_index] = x;
                 pos_y[particle_index] = y;
-                ++particle_index;
+                ++indirect_particle_index;
             }
             ++cell_index;
         }

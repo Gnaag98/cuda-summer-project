@@ -55,14 +55,15 @@ int main() {
     auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate particle positions and densities on the device.
-    decltype(h_pos_x)::value_type *d_pos_x;
-    decltype(h_pos_y)::value_type *d_pos_y;
-    decltype(h_density)::value_type *d_density;
+    auto d_pos_x = (decltype(h_pos_x)::value_type *){};
+    auto d_pos_y = (decltype(h_pos_y)::value_type *){};
+    auto d_density = (decltype(h_density)::value_type *){};
     allocate_array(&d_pos_x, h_pos_x.size());
     allocate_array(&d_pos_y, h_pos_y.size());
     allocate_array(&d_density, h_density.size());
 
-    distribute_from_density(h_pos_x, h_pos_y, particle_count_per_cell);
+    const auto particle_indices = get_shuffled_indices(N);
+    distribute_from_density(h_pos_x, h_pos_y, particle_indices, particle_count_per_cell);
 
     // Copy positions from the host to the device.
     store(d_pos_x, h_pos_x);
