@@ -14,6 +14,7 @@
 
 //#define DEBUG_DISTRIBUTION
 //#define DEBUG_AVOID_EDGES
+//#define DEBUG_STORE_RESULTS
 
 // Select float or double for all floating point types.
 using FloatingPoint = float;

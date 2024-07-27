@@ -72,7 +72,8 @@ int main() {
 
     const auto block_count = (N + block_size - 1) / block_size;
     printf("N: %d, block_count: %d, block_size: %d\n", N, block_count, block_size);
-
+    
+    cudaDeviceSynchronize();
     // Perform multiple iterations and pretend the particles are moving as well.
     for (auto i = 0; i < iteration_count; ++i) {
         using namespace std::chrono;
@@ -86,9 +87,16 @@ int main() {
 
         const auto end_time = high_resolution_clock::now();
         const auto duration = end_time - start_time;
-        printf("Iteration %d took %ld.%ld ms.\n", i,
-            duration_cast<milliseconds>(duration).count(),
-            duration_cast<microseconds>(duration).count()/1000);
+        const auto duration_ms = duration_cast<milliseconds>(duration).count();
+        const auto duration_us = duration_cast<microseconds>(duration).count();
+        if (duration_ms == 0) {
+            printf("Iteration %d took %ld us.\n", i,
+                duration_us);
+        } else {
+            printf("Iteration %d took %ld.%ld ms.\n", i,
+                duration_ms,
+                duration_us);
+        }
     }
 
     // Free device memory.
@@ -96,8 +104,10 @@ int main() {
     cudaFree(d_pos_y);
     cudaFree(d_density);
 
-    // Store data to files.
+#ifdef DEBUG_STORE_RESULTS
     const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
+    store_positions(output_directory / "positions_atomic.csv", h_pos_x, h_pos_y);
     store_density(output_directory / "density_atomic.csv", h_density);
+#endif
 }
