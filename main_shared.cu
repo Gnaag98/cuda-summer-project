@@ -6,6 +6,47 @@
 
 #include "common.cuh"
 
+using Particle = FloatingPoint2;
+
+/// Randomly distribute particles according with a given density distribution.
+void distribute_from_density(
+        std::span<Particle> particles,
+        std::span<const uint> particle_indices,
+        std::span<const uint> particle_count_per_cell) {
+    auto random_engine = std::default_random_engine(random_seed);
+#ifdef DEBUG_AVOID_EDGES
+    // Make sure no particle is near a cell edge. Will remove edge cases.
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.width, 0.75 * cell.width
+    );
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.25 * cell.height, 0.75 * cell.height
+    );
+#else
+    auto distribution_x = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.width
+    );
+    auto distribution_y = std::uniform_real_distribution<FloatingPoint>(
+        0.0, cell.height
+    );
+#endif
+    auto cell_index = 0;
+    auto indirect_particle_index = 0;
+    for (int v = 0; v < V; ++v) {
+        for (int u = 0; u < U; ++u) {
+            const auto cell_particle_count = particle_count_per_cell[cell_index];
+            for (int i = 0u; i < cell_particle_count; ++i) {
+                const auto x = u * cell.width + distribution_x(random_engine) - space.width / 2;
+                const auto y = v * cell.height + distribution_y(random_engine) - space.height / 2;
+                const auto particle_index = particle_indices[indirect_particle_index];
+                particles[particle_index] = { x, y };
+                ++indirect_particle_index;
+            }
+            ++cell_index;
+        }
+    }
+}
+
 template<typename T>
 void debug_store_array(std::filesystem::path filepath,
         std::span<const T> data) {
@@ -38,19 +79,18 @@ void initialize_indices(uint *indices, const uint N) {
 
 /// Calculate the cell index of each particle.
 __global__
-void get_cell_index_per_particle(const FloatingPoint *pos_x,
-        const FloatingPoint *pos_y, const uint particle_count,
+void get_cell_index_per_particle(const Particle *particles,
+        const uint particle_count,
         uint *cell_indices) {
     const auto particle_index = blockIdx.x * blockDim.x + threadIdx.x;
     if (particle_index >= particle_count) {
         return;
     }
-    const auto x = pos_x[particle_index];
-    const auto y = pos_y[particle_index];
+    const auto particle = particles[particle_index];
     // Use min() to force particles back inside the grid of cell.
     const auto cell_origin = uint2{
-        min(static_cast<uint>(floor(x_to_u(x))), U - 1),
-        min(static_cast<uint>(floor(y_to_v(y))), V - 1)
+        min(static_cast<uint>(floor(x_to_u(particle.x))), U - 1),
+        min(static_cast<uint>(floor(y_to_v(particle.y))), V - 1)
     };
     cell_indices[particle_index] = cell_origin.x + cell_origin.y * U;
 }
@@ -117,8 +157,7 @@ void initialize_kernel_data(
 
 __global__
 void add_density_shared(
-        const FloatingPoint *pos_x,
-        const FloatingPoint *pos_y,
+        const Particle *particles,
         const uint particle_count,
         FloatingPoint *density,
         const uint *cell_indices,
@@ -146,10 +185,9 @@ void add_density_shared(
         get_node_index(cell_origin.x + 1, cell_origin.y + 1)
     };
 
-    const auto x = pos_x[particle_index];
-    const auto y = pos_y[particle_index];
-    const auto u = x_to_u(x);
-    const auto v = y_to_v(y);
+    const auto particle = particles[particle_index];
+    const auto u = x_to_u(particle.x);
+    const auto v = y_to_v(particle.y);
 
     // Node weights. https://www.particleincell.com/2010/es-pic-method/
     const auto pos_relative_cell = FloatingPoint2{ u - cell_origin.x, v - cell_origin.y };
@@ -195,15 +233,13 @@ int main() {
     const auto N = generate_particle_density(particle_count_per_cell);
 #endif
     // Allocate on the host.
-    auto h_pos_x = std::vector<FloatingPoint>(N);
-    auto h_pos_y = std::vector<FloatingPoint>(N);
+    auto h_particles = std::vector<Particle>(N);
     auto h_cell_indices_before = std::vector<uint>(N);
     auto h_cell_indices_after = std::vector<uint>(N);
     auto h_density = std::vector<FloatingPoint>(node_count);
 
     // Allocate on the device.
-    auto d_pos_x = (decltype(h_pos_x)::value_type *){};
-    auto d_pos_y = (decltype(h_pos_y)::value_type *){};
+    auto d_particles = (decltype(h_particles)::value_type *){};
     auto d_particle_indices_before = (uint *){};
     auto d_particle_indices_after = (uint *){};
     auto d_cell_indices_before = (decltype(h_cell_indices_before)::value_type *){};
@@ -211,14 +247,13 @@ int main() {
     auto d_particle_indices_rel_cell = (uint *){};
     auto d_particle_count_per_cell = (uint *){};
     auto d_density = (decltype(h_density)::value_type *){};
-    allocate_array(&d_pos_x, h_pos_x.size());
-    allocate_array(&d_pos_y, h_pos_y.size());
-    allocate_array(&d_particle_indices_before, h_pos_x.size());
-    allocate_array(&d_particle_indices_after, h_pos_x.size());
+    allocate_array(&d_particles, h_particles.size());
+    allocate_array(&d_particle_indices_before, h_particles.size());
+    allocate_array(&d_particle_indices_after, h_particles.size());
     allocate_array(&d_cell_indices_before, h_cell_indices_before.size());
     allocate_array(&d_cell_indices_after, h_cell_indices_before.size());
-    allocate_array(&d_particle_indices_rel_cell, h_pos_x.size());
-    allocate_array(&d_particle_count_per_cell, h_pos_x.size());
+    allocate_array(&d_particle_indices_rel_cell, h_particles.size());
+    allocate_array(&d_particle_count_per_cell, h_particles.size());
     allocate_array(&d_density, h_density.size());
 
     const auto block_count = (N + block_size - 1) / block_size;
@@ -238,8 +273,8 @@ int main() {
 
     // Distribute the cells using shuffled indices to force uncoalesced global
     // access when reading particle postions.
-    const auto distribution_indices = get_shuffled_indices(h_pos_x.size());
-    distribute_from_density(h_pos_x, h_pos_y, distribution_indices,
+    const auto distribution_indices = get_shuffled_indices(h_particles.size());
+    distribute_from_density(h_particles, distribution_indices,
         particle_count_per_cell);
 
     initialize_indices<<<block_count, block_size>>>(
@@ -247,8 +282,7 @@ int main() {
     );
 
     // Copy from the host to the device.
-    store(d_pos_x, h_pos_x);
-    store(d_pos_y, h_pos_y);
+    store(d_particles, h_particles);
 
     cudaDeviceSynchronize();
     // Perform multiple iterations and pretend the particles are moving as well.
@@ -262,7 +296,7 @@ int main() {
         get_cell_index_per_particle<<<
             block_count, block_size
         >>>(
-            d_pos_x, d_pos_y, N, d_cell_indices_before
+            d_particles, N, d_cell_indices_before
         );
 
         // Run sorting operation
@@ -289,7 +323,7 @@ int main() {
         add_density_shared<<<
             block_count, block_size
         >>>(
-            d_pos_x, d_pos_y, N, d_density,
+            d_particles, N, d_density,
             d_cell_indices_after,
             d_particle_indices_after,
             d_particle_indices_rel_cell,
@@ -312,8 +346,7 @@ int main() {
     }
 
     // Free device memory.
-    cudaFree(d_pos_x);
-    cudaFree(d_pos_y);
+    cudaFree(d_particles);
     cudaFree(d_particle_indices_before);
     cudaFree(d_cell_indices_before);
     cudaFree(d_density);
@@ -325,7 +358,6 @@ int main() {
 #ifdef DEBUG_STORE_RESULTS
     const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
-    store_positions(output_directory / "positions_shared.csv", h_pos_x, h_pos_y);
     store_density(output_directory / "density_shared.csv", h_density);
 #endif
 }

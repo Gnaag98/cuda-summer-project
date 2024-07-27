@@ -59,9 +59,9 @@ struct Rectangle {
 };
 
 // Size of 2D space.
-const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
+constexpr auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
-const auto iteration_count = 10;
+const auto iteration_count = 1;
 
 const auto mean_cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
@@ -103,13 +103,6 @@ const auto random_seed = 1u;
 const auto warp_size = 32;
 
 template<typename T>
-constexpr auto linear_map(const T x, const T x1, const T x2, const T y1, const T y2) {
-    const auto slope = (y2 - y1) / (x2 - x1);
-    const auto y = (x - x1) * slope + y1;
-    return y;
-}
-
-template<typename T>
 void allocate_array(T **device_pointer, size_t count) {
     cudaMalloc(device_pointer, count * sizeof(T));
 }
@@ -141,12 +134,12 @@ void load(std::vector<T> &destination, const T *source) {
 
 ///Convert world x coordinate to horizontal cell index.
 constexpr auto x_to_u(FloatingPoint x) {
-    return linear_map<FloatingPoint>(x, space.left(), space.right(), 0, U);
+    return (x - space.left()) * U / space.width;
 }
 
 ///Convert world y coordinate to vertical cell index.
 constexpr auto y_to_v(FloatingPoint y) {
-    return linear_map<FloatingPoint>(y, space.bottom(), space.top(), 0, V);
+    return (y + space.height / 2) * V / space.height;
 }
 
 constexpr auto get_node_index(const uint x, const uint y) {
