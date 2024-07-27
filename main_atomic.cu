@@ -48,7 +48,7 @@ int main() {
 #ifndef DEBUG_DISTRIBUTION
     // Generate a particle density.
     auto particle_count_per_cell = std::vector<uint>(cell_count);
-    const auto N = generate_particle_density(particle_count_per_cell);
+    const auto N = generate_varied_density(particle_count_per_cell);
 #endif
     // Allocate particle positions and densities on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
@@ -93,9 +93,8 @@ int main() {
             printf("Iteration %d took %ld us.\n", i,
                 duration_us);
         } else {
-            printf("Iteration %d took %ld.%ld ms.\n", i,
-                duration_ms,
-                duration_us);
+            printf("Iteration %d took %.3f ms.\n", i,
+                duration_us / 1000.0);
         }
     }
 
@@ -107,7 +106,7 @@ int main() {
 #ifdef DEBUG_STORE_RESULTS
     const auto output_directory = std::filesystem::path("output");
     std::filesystem::create_directory(output_directory);
-    store_positions(output_directory / "positions_atomic.csv", h_pos_x, h_pos_y);
+    //store_positions(output_directory / "positions_atomic.csv", h_pos_x, h_pos_y);
     store_density(output_directory / "density_atomic.csv", h_density);
 #endif
 }

@@ -230,7 +230,7 @@ int main() {
 #ifndef DEBUG_DISTRIBUTION
     // Generate a particle density.
     auto particle_count_per_cell = std::vector<uint>(cell_count);
-    const auto N = generate_particle_density(particle_count_per_cell);
+    const auto N = generate_varied_density(particle_count_per_cell);
 #endif
     // Allocate on the host.
     auto h_particles = std::vector<Particle>(N);
@@ -339,9 +339,8 @@ int main() {
             printf("Iteration %d took %ld us.\n", i,
                 duration_us);
         } else {
-            printf("Iteration %d took %ld.%ld ms.\n", i,
-                duration_ms,
-                duration_us);
+            printf("Iteration %d took %.3f ms.\n", i,
+                duration_us / 1000.0);
         }
     }
 

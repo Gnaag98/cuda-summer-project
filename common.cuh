@@ -58,16 +58,13 @@ struct Rectangle {
     constexpr T top() const { return y + height; }
 };
 
-// Size of 2D space.
-constexpr auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
-
 const auto iteration_count = 1;
 
 const auto mean_cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
-const auto U = static_cast<int>(512);
-const auto V = static_cast<int>(1024);
+const auto U = static_cast<int>(1024);
+const auto V = static_cast<int>(4096);
 const auto block_size = 128;
 #else
 const auto U = static_cast<int>(2);
@@ -86,6 +83,9 @@ const auto N = ([]{
     return n;
 })();
 #endif
+
+// Size of 2D space.
+constexpr auto space = Rectangle<FloatingPoint>::centered(3 * U, 5 * V);
 
 const auto cell_count = U * V;
 
@@ -165,7 +165,7 @@ auto get_shuffled_indices(const uint indices_count) {
 auto generate_particle_density(std::span<uint> particle_count_per_cell) {
     auto random_engine = std::default_random_engine(random_seed);
     auto distribution = std::uniform_int_distribution<int>(
-        0.00 * mean_cell_particle_count, 2.00 * mean_cell_particle_count
+        0, 2 * mean_cell_particle_count
     );
     auto N = 0u;
     for (auto i = 0; i < particle_count_per_cell.size(); ++i) {
@@ -173,6 +173,69 @@ auto generate_particle_density(std::span<uint> particle_count_per_cell) {
         particle_count_per_cell[i] = cell_particle_count;
         N += cell_particle_count;
     }
+    return N;
+}
+
+/// Generate a density distribution and return the total particle count.
+auto generate_varied_density(std::span<uint> particle_count_per_cell) {
+    // Target density distribution, split into 9 zones:
+    // ┌────────┬──────────────┬────────┐
+    // │ 6. mid │ 7.  mid      │ 8. mid │
+    // ├────────┼──────────────┼────────┤
+    // │ 3. low │ 4. high->low │ 5. mid │
+    // ├────────┼──────────────┼────────┤
+    // │ 0. mid │ 1.  mid      │ 2. mid │
+    // └────────┴──────────────┴────────┘
+
+    auto random_engine = std::default_random_engine(random_seed);
+    auto low_distribution = std::uniform_int_distribution<int>(
+        0, 4
+    );
+    auto mid_distribution = std::uniform_int_distribution<int>(
+        0.5 * mean_cell_particle_count, 1.5 * mean_cell_particle_count
+    );
+    auto high_distribution = std::uniform_int_distribution<int>(
+        1.5 * mean_cell_particle_count, 2.0 * mean_cell_particle_count
+    );
+    
+    auto N = 0u;
+
+    // Mid distribution (zones 0-2 and 5-8).
+    for (auto u = 0; u < U; ++u) {
+        for (auto v = 0; v < V; ++v) {
+            const auto cell_index = u + v * U;
+            // Skip zone 3 and 4.
+            if (u < U * 2 / 3 && v >= V / 3 && v < V * 2 / 3) continue;
+            const auto cell_particle_count = mid_distribution(random_engine);
+            particle_count_per_cell[cell_index] = cell_particle_count;
+            N += cell_particle_count;
+        }
+    }
+    // Low distribution (zone 3).
+    for (auto u = 0; u < U / 3; ++u) {
+        for (auto v = V / 3; v < V * 2 / 3; ++v) {
+            const auto cell_index = u + v * U;
+            const auto cell_particle_count = low_distribution(random_engine);
+            particle_count_per_cell[cell_index] = cell_particle_count;
+            N += cell_particle_count;
+        }
+    }
+    // Gradient distribution (zone 4).
+    for (auto u = U / 3; u < U * 2 / 3; ++u) {
+        for (auto v = V / 3; v < V * 2 / 3; ++v) {
+            const auto cell_index = u + v * U;
+            const auto mid_contribution = mid_distribution(random_engine);
+            const auto high_contribution = high_distribution(random_engine);
+            // Left = high, Right = low. Linear gradient between.
+            const auto zone_width = U / 3.0;
+            const auto weight = (u - U / 3) / zone_width;
+            const auto cell_particle_count = weight * mid_contribution
+                + (1 - weight) * high_contribution;
+            particle_count_per_cell[cell_index] = cell_particle_count;
+            N += cell_particle_count;
+        }
+    }
+
     return N;
 }
 
