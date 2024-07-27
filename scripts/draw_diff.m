@@ -1,7 +1,7 @@
 clear
-clc
+%clc
 
-tolerance = 0.1;
+tolerance = 0.001;
 
 density_atomic = load("../output/density_atomic.csv");
 density_shared = load("../output/density_shared.csv");
