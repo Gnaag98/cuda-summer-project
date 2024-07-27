@@ -60,30 +60,19 @@ struct Rectangle {
 // Size of 2D space.
 const auto space = Rectangle<FloatingPoint>::centered(2048.0, 4096.0);
 
+const auto iteration_count = 10;
+
 const auto mean_cell_particle_count = 16;
 #ifndef DEBUG_DISTRIBUTION
 // Number of cells in the grid.
 const auto U = static_cast<int>(512);
 const auto V = static_cast<int>(1024);
+const auto block_size = 128;
 #else
 const auto U = static_cast<int>(2);
 const auto V = static_cast<int>(2);
+const auto block_size = 4;
 const uint particle_count_per_cell[] = { 3, 0, 2, 1 };
-#endif
-const auto block_size = 128;
-
-const auto cell_count = U * V;
-
-const auto cell = Dimension{
-    .width = space.width / U,
-    .height = space.height / V
-};
-
-// Density lattice, where each node is a cell corner.
-const auto lattice = Dimension{ (U + 1), (V + 1) };
-const auto node_count = lattice.width * lattice.height;
-// Total number of particles.
-#ifdef DEBUG_DISTRIBUTION
 const auto N = ([]{
     auto n = 0;
     auto i = 0;
@@ -96,6 +85,17 @@ const auto N = ([]{
     return n;
 })();
 #endif
+
+const auto cell_count = U * V;
+
+const auto cell = Dimension{
+    .width = space.width / U,
+    .height = space.height / V
+};
+
+// Density lattice, where each node is a cell corner.
+const auto lattice = Dimension{ (U + 1), (V + 1) };
+const auto node_count = lattice.width * lattice.height;
 
 const auto random_seed = 1u;
 

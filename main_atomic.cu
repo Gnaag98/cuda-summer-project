@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <vector>
 
@@ -69,13 +70,26 @@ int main() {
     store(d_pos_x, h_pos_x);
     store(d_pos_y, h_pos_y);
 
-    // Initialize density.
-    fill(d_density, 0, h_density.size());
-
     const auto block_count = (N + block_size - 1) / block_size;
     printf("N: %d, block_count: %d, block_size: %d\n", N, block_count, block_size);
-    add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, N, d_density);
-    load(h_density, d_density);
+
+    // Perform multiple iterations and pretend the particles are moving as well.
+    for (auto i = 0; i < iteration_count; ++i) {
+        using namespace std::chrono;
+        const auto start_time = high_resolution_clock::now();
+
+        // Reset density.
+        fill(d_density, 0, h_density.size());
+
+        add_density_atomic<<<block_count, block_size>>>(d_pos_x, d_pos_y, N, d_density);
+        load(h_density, d_density);
+
+        const auto end_time = high_resolution_clock::now();
+        const auto duration = end_time - start_time;
+        printf("Iteration %d took %ld.%ld ms.\n", i,
+            duration_cast<milliseconds>(duration).count(),
+            duration_cast<microseconds>(duration).count()/1000);
+    }
 
     // Free device memory.
     cudaFree(d_pos_x);

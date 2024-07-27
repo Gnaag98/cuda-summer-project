@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <vector>
 
@@ -14,24 +15,27 @@ struct KernelData {
     std::vector<uint> particle_count_per_cell;
 };
 
+template<typename T>
+void debug_store_array(std::filesystem::path filepath,
+        std::span<const T> data) {
+    auto file = std::ofstream(filepath);
+    for (auto i = 0; i < data.size(); ++i) {
+        file << data[i] << ',';
+    }
+    file << ";\n";
+}
+
 // TODO: Give this function a beter name.
 // XXX: This implementation will result in blocks sharing cells often, since
 // each block will handle block_size amount of threads each. A better solution
 // would be to only allow sharing cells when particles per cell > block size,
 // that is it is impossible for a block to single-handedly process the cell.
-auto get_kernel_data(std::span<const uint> cell_indices) {
+auto get_kernel_data(KernelData &kernel_data,
+        std::span<const uint> cell_indices,
+        const uint block_count, const uint max_instruction_count) {
     if (cell_indices.size() == 0) {
         throw std::runtime_error("cell_indices empty.");
     }
-    auto kernel_data = KernelData{};
-    // TODO: Find a clever formula for the reserve sizes.
-    kernel_data.first_particle_index_per_cell.reserve(cell_count);
-    kernel_data.particle_count_per_cell.reserve(cell_count);
-
-    kernel_data.cell_index_per_instruction.reserve(cell_indices.size() / block_size);
-    kernel_data.cell_count_per_block.reserve(cell_indices.size() / block_size);
-    kernel_data.first_instruction_index_per_block.reserve(cell_indices.size() / block_size);
-
     auto current_cell_index = cell_indices[0];
     auto block_particle_count = 0;
 
@@ -96,7 +100,6 @@ auto get_kernel_data(std::span<const uint> cell_indices) {
             current_cell_index = cell_indices[i];
         }
     }
-    return kernel_data;
 }
 
 /// https://graphics.stanford.edu/%7Eseander/bithacks.html#RoundUpPowerOf2
@@ -131,6 +134,12 @@ auto get_cell_index_rel_block(
     return block_cell_count;
 }
 
+__global__
+void initialize_indices(uint *indices, const uint N) {
+    const auto index = blockIdx.x * blockDim.x + threadIdx.x;
+    indices[index] = index;
+}
+
 /// Calculate the cell index of each particle.
 __global__
 void get_cell_index_per_particle(const FloatingPoint *pos_x,
@@ -149,7 +158,8 @@ void get_cell_index_per_particle(const FloatingPoint *pos_x,
     cell_indices[particle_index] = cell_origin.x + cell_origin.y * U;
 }
 
-__global__ void add_density_shared(
+__global__
+void add_density_shared(
         const FloatingPoint *pos_x,
         const FloatingPoint *pos_y,
         const uint particle_count,
@@ -178,7 +188,6 @@ __global__ void add_density_shared(
     // Block-specific variables.
     const auto first_instruction_in_block_index = first_instruction_index_per_block[blockIdx.x];
     const auto block_cell_count = cell_count_per_block[blockIdx.x];
-
     // Cell-specific variables.
     // XXX: Assumes both fixed and equal number of cells per block.
     const auto cell_index_rel_block = get_cell_index_rel_block(
@@ -258,7 +267,6 @@ int main() {
     // Allocate on the host.
     auto h_pos_x = std::vector<FloatingPoint>(N);
     auto h_pos_y = std::vector<FloatingPoint>(N);
-    const auto h_particle_indices_before = get_ordered_indices(N);
     auto h_cell_indices_before = std::vector<uint>(N);
     auto h_cell_indices_after = std::vector<uint>(N);
     auto h_density = std::vector<FloatingPoint>(node_count);
@@ -266,41 +274,42 @@ int main() {
     // Allocate on the device.
     auto d_pos_x = (decltype(h_pos_x)::value_type *){};
     auto d_pos_y = (decltype(h_pos_y)::value_type *){};
-    auto d_particle_indices_before = (decltype(h_particle_indices_before)::value_type *){};
-    auto d_particle_indices_after = (decltype(h_particle_indices_before)::value_type *){};
+    auto d_particle_indices_before = (uint *){};
+    auto d_particle_indices_after = (uint *){};
     auto d_cell_indices_before = (decltype(h_cell_indices_before)::value_type *){};
     auto d_cell_indices_after = (decltype(h_cell_indices_before)::value_type *){};
     auto d_density = (decltype(h_density)::value_type *){};
     allocate_array(&d_pos_x, h_pos_x.size());
     allocate_array(&d_pos_y, h_pos_y.size());
-    allocate_array(&d_particle_indices_before, h_particle_indices_before.size());
-    allocate_array(&d_particle_indices_after, h_particle_indices_before.size());
+    allocate_array(&d_particle_indices_before, h_pos_x.size());
+    allocate_array(&d_particle_indices_after, h_pos_x.size());
     allocate_array(&d_cell_indices_before, h_cell_indices_before.size());
     allocate_array(&d_cell_indices_after, h_cell_indices_before.size());
     allocate_array(&d_density, h_density.size());
 
-    // Distribute the cells using shuffled indices to force uncoalesced global
-    // access when reading particle postions.
-    const auto distribution_indices = get_shuffled_indices(h_pos_x.size());
-    distribute_from_density(h_pos_x, h_pos_y, distribution_indices,
-        particle_count_per_cell);
-
-    // Copy from the host to the device.
-    store(d_pos_x, h_pos_x);
-    store(d_pos_y, h_pos_y);
-    store(d_particle_indices_before, h_particle_indices_before);
-
-    // Initialize density.
-    fill(d_density, 0, h_density.size());
-
     const auto block_count = (N + block_size - 1) / block_size;
     printf("N: %d, block_count: %d, block_size: %d\n", N, block_count, block_size);
 
-    get_cell_index_per_particle<<<
-        block_count, block_size
-    >>>(
-        d_pos_x, d_pos_y, N, d_cell_indices_before
-    );
+    // Allocate space for KernelData.
+    auto kernel_data = KernelData{};
+    kernel_data.first_instruction_index_per_block.reserve(cell_count);
+    kernel_data.cell_count_per_block.reserve(cell_count);
+    // XXX: Brutally pessimistic reservation. This reservation is an unreachable
+    // upper limit, but I don't know how far I can lower it.
+    const auto max_instruction_count = N;
+    kernel_data.cell_index_per_instruction.reserve(max_instruction_count);
+    kernel_data.first_particle_index_per_cell.reserve(max_instruction_count);
+    kernel_data.particle_count_per_cell.reserve(max_instruction_count);
+    auto d_first_instruction_index_per_block = (decltype(kernel_data.first_instruction_index_per_block)::value_type *){};
+    auto d_cell_count_per_block = (decltype(kernel_data.cell_count_per_block)::value_type *){};
+    auto d_cell_index_per_instruction = (decltype(kernel_data.cell_index_per_instruction)::value_type *){};
+    auto d_first_particle_index_per_cell = (decltype(kernel_data.first_particle_index_per_cell)::value_type *){};
+    auto d_particle_count_per_cell = (decltype(kernel_data.particle_count_per_cell)::value_type *){};
+    allocate_array(&d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block.capacity());
+    allocate_array(&d_cell_count_per_block, kernel_data.cell_count_per_block.capacity());
+    allocate_array(&d_cell_index_per_instruction, kernel_data.cell_index_per_instruction.capacity());
+    allocate_array(&d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell.capacity());
+    allocate_array(&d_particle_count_per_cell, kernel_data.particle_count_per_cell.capacity());
 
     // Determine temporary device storage requirements
     void *d_temp_sort_storage = nullptr;
@@ -311,54 +320,81 @@ int main() {
         d_particle_indices_before, d_particle_indices_after,
         N
     );
-
     // Allocate temporary storage
     cudaMalloc(&d_temp_sort_storage, temp_sort_storage_byte_count);
 
-    // Run sorting operation
-    cub::DeviceRadixSort::SortPairs(
-        d_temp_sort_storage, temp_sort_storage_byte_count,
-        d_cell_indices_before, d_cell_indices_after,
-        d_particle_indices_before, d_particle_indices_after,
-        N
+    // Distribute the cells using shuffled indices to force uncoalesced global
+    // access when reading particle postions.
+    const auto distribution_indices = get_shuffled_indices(h_pos_x.size());
+    distribute_from_density(h_pos_x, h_pos_y, distribution_indices,
+        particle_count_per_cell);
+
+    initialize_indices<<<block_count, block_size>>>(
+        d_particle_indices_before, N
     );
 
-    load(h_cell_indices_after, d_cell_indices_after);
-    auto kernel_data = get_kernel_data(h_cell_indices_after);
+    // Copy from the host to the device.
+    store(d_pos_x, h_pos_x);
+    store(d_pos_y, h_pos_y);
 
-    // XXX: This is a mess.first_instruction_index_per_block
-    decltype(kernel_data.first_instruction_index_per_block)::value_type *d_first_instruction_index_per_block;
-    decltype(kernel_data.cell_count_per_block)::value_type *d_cell_count_per_block;
+    // Perform multiple iterations and pretend the particles are moving as well.
+    for (auto i = 0; i < iteration_count; ++i) {
+        using namespace std::chrono;
+        const auto start_time = high_resolution_clock::now();
 
-    decltype(kernel_data.cell_index_per_instruction)::value_type *d_cell_index_per_instruction;
-    decltype(kernel_data.first_particle_index_per_cell)::value_type *d_first_particle_index_per_cell;
-    decltype(kernel_data.particle_count_per_cell)::value_type *d_particle_count_per_cell;
+        // Reset density.
+        fill(d_density, 0, h_density.size());
 
-    allocate_array(&d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block.size());
-    allocate_array(&d_cell_count_per_block, kernel_data.cell_count_per_block.size());
-    
-    allocate_array(&d_cell_index_per_instruction, kernel_data.cell_index_per_instruction.size());
-    allocate_array(&d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell.size());
-    allocate_array(&d_particle_count_per_cell, kernel_data.particle_count_per_cell.size());
+        // Reset kernel data.
+        kernel_data.first_instruction_index_per_block.clear();
+        kernel_data.cell_count_per_block.clear();
+        kernel_data.cell_index_per_instruction.clear();
+        kernel_data.first_particle_index_per_cell.clear();
+        kernel_data.particle_count_per_cell.clear();
 
-    store(d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block);
-    store(d_cell_count_per_block, kernel_data.cell_count_per_block);
-    
-    store(d_cell_index_per_instruction, kernel_data.cell_index_per_instruction);
-    store(d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell);
-    store(d_particle_count_per_cell, kernel_data.particle_count_per_cell);
+        get_cell_index_per_particle<<<
+            block_count, block_size
+        >>>(
+            d_pos_x, d_pos_y, N, d_cell_indices_before
+        );
 
-    printf("Cell count: %d, instruction count: %lu\n",
-        cell_count, kernel_data.cell_index_per_instruction.size());
+        // Run sorting operation
+        cub::DeviceRadixSort::SortPairs(
+            d_temp_sort_storage, temp_sort_storage_byte_count,
+            d_cell_indices_before, d_cell_indices_after,
+            d_particle_indices_before, d_particle_indices_after,
+            N
+        );
 
-    add_density_shared<<<
-        block_count, block_size
-    >>>(
-        d_pos_x, d_pos_y, N, d_density, d_particle_indices_after,
-        d_first_instruction_index_per_block, d_cell_count_per_block,
-        d_cell_index_per_instruction, d_first_particle_index_per_cell, d_particle_count_per_cell
-    );
-    load(h_density, d_density);
+        // TODO: Make this a kernel instead.
+        load(h_cell_indices_after, d_cell_indices_after);
+        get_kernel_data(kernel_data, h_cell_indices_after, block_count, max_instruction_count);
+
+        store(d_first_instruction_index_per_block, kernel_data.first_instruction_index_per_block);
+        store(d_cell_count_per_block, kernel_data.cell_count_per_block);
+        
+        store(d_cell_index_per_instruction, kernel_data.cell_index_per_instruction);
+        store(d_first_particle_index_per_cell, kernel_data.first_particle_index_per_cell);
+        store(d_particle_count_per_cell, kernel_data.particle_count_per_cell);
+
+        /* printf("Cell count: %d, block count?: %lu, instruction count: %lu\n",
+            cell_count, kernel_data.first_instruction_index_per_block.size(), kernel_data.cell_index_per_instruction.size()); */
+
+        add_density_shared<<<
+            block_count, block_size
+        >>>(
+            d_pos_x, d_pos_y, N, d_density, d_particle_indices_after,
+            d_first_instruction_index_per_block, d_cell_count_per_block,
+            d_cell_index_per_instruction, d_first_particle_index_per_cell, d_particle_count_per_cell
+        );
+        load(h_density, d_density);
+
+        const auto end_time = high_resolution_clock::now();
+        const auto duration = end_time - start_time;
+        printf("Iteration %d took %ld.%ld ms.\n", i,
+            duration_cast<milliseconds>(duration).count(),
+            duration_cast<microseconds>(duration).count()/1000);
+    }
 
     // Free device memory.
     cudaFree(d_pos_x);
@@ -380,4 +416,12 @@ int main() {
     std::filesystem::create_directory(output_directory);
     store_positions(output_directory / "positions.csv", h_pos_x, h_pos_y);
     store_density(output_directory / "density_shared.csv", h_density);
+
+    debug_store_array<uint>(output_directory / "cell_indices.csv", h_cell_indices_before);
+    debug_store_array<uint>(output_directory / "first_instruction_index_per_block.csv", kernel_data.first_instruction_index_per_block);
+    debug_store_array<uint>(output_directory / "cell_count_per_block.csv", kernel_data.cell_count_per_block);
+
+    debug_store_array<uint>(output_directory / "cell_index_per_instruction.csv", kernel_data.cell_index_per_instruction);
+    debug_store_array<uint>(output_directory / "first_particle_index_per_cell.csv", kernel_data.first_particle_index_per_cell);
+    debug_store_array<uint>(output_directory / "particle_count_per_cell.csv", kernel_data.particle_count_per_cell);
 }
